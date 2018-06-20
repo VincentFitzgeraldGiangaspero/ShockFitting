@@ -1,0 +1,226 @@
+// Copyright (C) 2014 von Karman Institute for Fluid Dynamics, Belgium
+//
+// This software is distributed under the terms of the
+// GNU Lesser General Public License version 3 (LGPLv3).
+// See doc/lgpl.txt and doc/gpl.txt for the license text.
+
+#include "ShockDetectorSF/FindShockSurfaceNormals3DCGAL.hh"
+#include "Framework/PhysicsData.hh"
+#include "Framework/PhysicsInfo.hh"
+
+#include <CGAL/Kernel_traits.h>
+#include <CGAL/Origin.h>
+
+#include <CGAL/Exact_predicates_inexact_constructions_kernel.h>
+#include <CGAL/pca_estimate_normals.h>
+#include <CGAL/mst_orient_normals.h>
+#include <CGAL/property_map.h>
+#include <CGAL/IO/write_xyz_points.h>
+
+#include <utility> // defines std::pair
+#include <list>
+#include <fstream>
+#include <iostream>
+
+
+// Types
+typedef CGAL::Exact_predicates_inexact_constructions_kernel Kernel;
+typedef Kernel::Point_3 Point;
+typedef Kernel::Vector_3 Vector;
+// Point with normal vector stored in a std::pair.
+typedef std::pair<Point, Vector> PointVectorPair;
+// Concurrency
+#ifdef CGAL_LINKED_WITH_TBB
+typedef CGAL::Parallel_tag Concurrency_tag;
+#else
+typedef CGAL::Sequential_tag Concurrency_tag;
+#endif
+
+//--------------------------------------------------------------------------//
+
+using namespace std;
+
+//--------------------------------------------------------------------------//
+
+namespace ShockFitting {
+
+//--------------------------------------------------------------------------//
+
+FindShockSurfaceNormals3DCGAL::FindShockSurfaceNormals3DCGAL()
+{
+}
+
+//--------------------------------------------------------------------------//
+
+FindShockSurfaceNormals3DCGAL::~FindShockSurfaceNormals3DCGAL()
+{
+}
+
+//--------------------------------------------------------------------------//
+
+void FindShockSurfaceNormals3DCGAL::computeUnitNormals3D()
+{
+  cout << "     => FindShockSurfaceNormals3DCGAL::computeUnitNormals3D()\n";
+
+  setPhysicsData();
+
+  std::vector<Vector> normals_vect;
+
+  typedef std::vector<PointVectorPair> PointVect;
+
+  PointVect points; // Type of input point set
+
+  normals.resize(PhysicsInfo::getnbDim(),
+                 PhysicsInfo::getnbShPointsMax(),
+                 PhysicsInfo::getnbShMax());
+
+
+
+  unsigned ISH=0;
+
+  for(unsigned ISHPOIN=0;ISHPOIN<nShockPoints->at(ISH);ISHPOIN++) {
+    points.push_back(PointVectorPair(Point((*XYZSh)(0,ISHPOIN,ISH),(*XYZSh)(1,ISHPOIN,ISH),
+      (*XYZSh)(2,ISHPOIN,ISH)), Vector()));
+
+  }
+
+
+
+    // Estimates normals direction.
+  // Note: pca_estimate_normals() requires an iterator over points
+  // as well as property maps to access each point's position and normal.
+  const int nb_neighbors = 10; // K-nearest neighbors = 3 rings
+  CGAL::pca_estimate_normals<Concurrency_tag>(points.begin(), points.end(),
+                             CGAL::First_of_pair_property_map<PointVectorPair>(),
+                             CGAL::Second_of_pair_property_map<PointVectorPair>(),
+                             nb_neighbors);
+  // Orients normals.
+  // Note: mst_orient_normals() requires an iterator over points
+  // as well as property maps to access each point's position and normal.
+ 	std::vector<PointVectorPair>::iterator unoriented_points_begin =
+  CGAL::mst_orient_normals(points.begin(), points.end(),
+                           CGAL::First_of_pair_property_map<PointVectorPair>(),
+                           CGAL::Second_of_pair_property_map<PointVectorPair>(),
+                           nb_neighbors);
+  // Optional: delete points with an unoriented normal
+  // if you plan to call a reconstruction algorithm that expects oriented normals.
+  points.erase(unoriented_points_begin, points.end());
+
+
+
+
+  for ( auto it = points.begin(); it != points.end(); it++ ){
+  normals_vect.push_back(it->second);
+  }
+
+
+	for(unsigned ISH=0;ISH<(*nShocks);ISH++) {
+	  for(unsigned ISHPOIN=0;ISHPOIN<nShockPoints->at(ISH);ISHPOIN++) {
+	   normals(0,ISHPOIN,ISH)=normals_vect[ISHPOIN][0];
+	   normals(1,ISHPOIN,ISH)=normals_vect[ISHPOIN][1];
+	   normals(2,ISHPOIN,ISH)=normals_vect[ISHPOIN][2];
+	  }
+	}
+
+
+  //computeUnitNormalsSpecialPoints3D();  unused at the moment
+
+  // write file plotting unit normal vector
+  FILE* plotNorm;
+  plotNorm = fopen("log/ShockSurfaceNormals3D.dat","w");
+
+  for (unsigned ISH=0; ISH<(*nShocks); ISH++) {
+   fprintf(plotNorm ,"%s","TITLE = Shock Surface normals\n");
+   fprintf(plotNorm ,"%s","VARIABLES = X Y Z Z(1) Z(2) Z(3) NX NY NZ\n");
+   fprintf(plotNorm ,"%s","ZONE T='sampletext', F = FEPOINT, ET = TRIANGLE ");
+   fprintf(plotNorm ,"%s %5u","N = ",nShockPoints->at(ISH));
+  //  fprintf(plotNorm ,"%s %5u %s",", E = ",nShockPoints->at(ISH)-1,"\n");
+   for (unsigned I=0; I<nShockPoints->at(ISH); I++) {
+    for (unsigned K=0; K<PhysicsInfo::getnbDim(); K++)
+     {fprintf(plotNorm ,"%32.16E %s",(*XYZSh)(K,I,ISH)," ");}
+    fprintf(plotNorm ,"%s","\n");
+    fprintf(plotNorm ,"%s","1  1 ");
+    for (unsigned K=0; K<PhysicsInfo::getnbDim(); K++)
+     {fprintf(plotNorm ,"%32.16E %s",normals(K,I,ISH)," ");}
+    fprintf(plotNorm ,"%s","\n");
+   }
+   for (unsigned I=0; I<nShockPoints->at(ISH)-1; I++) {
+    fprintf(plotNorm ,"%u %s %u %s %u %s",I+1," ",I+2," ",I+1,"\n");
+   }
+  }
+
+  fclose(plotNorm);
+
+}
+
+//--------------------------------------------------------------------------//
+
+void FindShockSurfaceNormals3DCGAL::computeUnitNormalsSpecialPoints3D()
+{
+  // unsigned ISH, I, IP;
+  //
+  // for(unsigned ISPPNTS=0;ISPPNTS<(*nSpecPoints);ISPPNTS++) {
+  //  if(typeSpecPoints->at(ISPPNTS)=="OPX"  ||
+  //     typeSpecPoints->at(ISPPNTS)=="IPX"  ||
+  //     typeSpecPoints->at(ISPPNTS)=="WPNRX"  ) {
+  //   ISH = (*SHinSPPs)(0,0,ISPPNTS)-1;
+  //   I = (*SHinSPPs)(1,0,ISPPNTS)-1;
+  //   IP = I*(nShockPoints->at(ISH)-1);
+  //   normals(0,IP,ISH) = 1.;
+  //   normals(1,IP,ISH) = 0.;
+  //  }
+  //  if(typeSpecPoints->at(ISPPNTS)=="OPY" ||
+  //     typeSpecPoints->at(ISPPNTS)=="IPY" ||
+  //     typeSpecPoints->at(ISPPNTS)=="WPNRY"  ) {
+  //   ISH = (*SHinSPPs)(0,0,ISPPNTS)-1;
+  //   I = (*SHinSPPs)(1,0,ISPPNTS)-1;
+  //   IP = I*(nShockPoints->at(ISH)-1);
+  //   normals(0,IP,ISH) = 0.;
+  //   normals(1,IP,ISH) = 1.;
+  //  }
+  //  if(typeSpecPoints->at(ISPPNTS)=="TP") {
+  //   cout << "FindShockSurfaceNormals3DCGAL:: (!) warning => unit normal computation ";
+  //   cout << "                                           for TP not implemented\n";
+  //   exit(1);
+  //  }
+  //  if(typeSpecPoints->at(ISPPNTS)=="QP") {
+  //   cout << "FindShockSurfaceNormals3DCGAL:: (!) warning => unit normal computation ";
+  //   cout << "                                           for QP not implemented\n";
+  //   exit(1);
+  //  }
+  //  if(typeSpecPoints->at(ISPPNTS)=="RRX") {
+  //   cout << "FindShockSurfaceNormals3DCGAL:: (!) warning => unit normal computation ";
+  //   cout << "                                           for RRX not implemented\n";
+  //   exit(1);
+  //  }
+  //  if(typeSpecPoints->at(ISPPNTS)=="EP") {
+  //   cout << "FindShockSurfaceNormals3DCGAL:: (!) warning => unit normal computation ";
+  //   cout << "                                           for EP not implemented\n";
+  //   exit(1);
+  //  }
+  //  if(typeSpecPoints->at(ISPPNTS)=="C") {
+  //   cout << "FindShockSurfaceNormals3DCGAL:: (!) warning => unit normal computation ";
+  //   cout << "                                           for C not implemented\n";
+  //   exit(1);
+  //  }
+  // }
+}
+
+//--------------------------------------------------------------------------//
+
+void FindShockSurfaceNormals3DCGAL::setPhysicsData()
+{
+  nShocks = PhysicsData::getInstance().getData <unsigned> ("nShocks");
+  nSpecPoints = PhysicsData::getInstance().getData <unsigned> ("nSpecPoints");
+  nShockPoints =
+   PhysicsData::getInstance().getData <vector <unsigned> > ("nShockPoints");
+  typeSpecPoints =
+     PhysicsData::getInstance().getData <vector <string> > ("TypeSpecPoints");
+  XYZSh = PhysicsData::getInstance().getData <Array3D <double> > ("XYZSH");
+  SHinSPPs =
+       PhysicsData::getInstance().getData <Array3D <unsigned> > ("SHinSPPs");
+}
+
+//--------------------------------------------------------------------------//
+
+} // namespace ShockFitting

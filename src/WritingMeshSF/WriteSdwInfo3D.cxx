@@ -1,0 +1,527 @@
+// Copyright (C) 2014 von Karman Institute for Fluid Dynamics, Belgium
+//
+// This software is distributed under the terms of the
+// GNU Lesser General Public License version 3 (LGPLv3).
+// See doc/lgpl.txt and doc/gpl.txt for the license text.
+
+#include "WritingMeshSF/WriteSdwInfo3D.hh"
+#include "SConfig/ObjectProvider.hh"
+#include "Framework/MeshGenerator.hh"
+#include "Framework/Log.hh"
+#include "Framework/PhysicsData.hh"
+#include "Framework/PhysicsInfo.hh"
+#include "Framework/MeshData.hh"
+
+//--------------------------------------------------------------------------//
+
+using namespace std;
+using namespace SConfig;
+
+//--------------------------------------------------------------------------//
+
+namespace ShockFitting {
+
+//--------------------------------------------------------------------------//
+
+// this variable instantiation activates the self-registration mechanism
+ObjectProvider<WriteSdwInfo3D, WritingMesh> WriteSdwInfo3DProv("WriteSdwInfo3D");
+
+//--------------------------------------------------------------------------//
+
+WriteSdwInfo3D::WriteSdwInfo3D(const std::string& objectName) :
+ WritingMesh(objectName)
+{
+}
+
+//--------------------------------------------------------------------------//
+
+WriteSdwInfo3D::~WriteSdwInfo3D()
+{
+}
+
+//--------------------------------------------------------------------------//
+
+void WriteSdwInfo3D::setup()
+{
+  LogToScreen(VERBOSE,"WriteSdwInfo3D::setup() => start\n");
+
+  LogToScreen(VERBOSE,"WriteSdwInfo3D::setup() => end\n");
+}
+
+//--------------------------------------------------------------------------//
+
+void WriteSdwInfo3D::unsetup()
+{
+  LogToScreen(VERBOSE,"WriteSdwInfo3D::unsetup()\n");
+}
+
+//--------------------------------------------------------------------------//
+
+void WriteSdwInfo3D::write()
+{
+  LogToScreen(INFO,"WriteSdwInfo3D::write()\n");
+
+  setMeshData();
+
+  setPhysicsData();
+
+  setAddress();
+
+
+  unsigned iShock;
+  unsigned NSHE, IDUMMY;
+  logfile.Open(getClassName().c_str());
+
+  file = fopen("sh99.dat","w");
+
+  fprintf(file,"%u %s",(*nShocks), "\n");
+  logfile("nb. ",(*nShocks), " shock/discontinuities\n");
+
+  for(unsigned ISH=0; ISH<(*nShocks); ISH++) {
+   iShock = ISH+1;
+
+   logfile("Shock/Discontinuity nb. ", iShock, "\n");
+   fprintf(file,"%u %s %s",nShockPoints->at(ISH)," ",(typeSh->at(ISH)).c_str());
+   fprintf(file,"%s %u %s"," ",nShockFaces->at(ISH),"\n");
+
+   logfile("Kind of discontinuity: ", typeSh->at(ISH), "\n");
+   logfile ("nb of points ",nShockPoints->at(ISH), "\n");
+
+
+   for(unsigned I=0; I<nShockPoints->at(ISH); I++) {
+    for(unsigned IA=0; IA<PhysicsInfo::getnbDim(); IA++)
+     { fprintf(file,"%17.15E %s",(*XYZSh)(IA,I,ISH)," "); }
+    fprintf(file,"%s","\n");
+    }
+   
+
+   for(unsigned I=0; I<nShockPoints->at(ISH); I++) {
+    for(unsigned IA=0; IA<(*ndof); IA++)
+     { fprintf(file,"%17.15E %s",(*ZroeShd)(IA,I,ISH)," "); }
+    fprintf(file,"%s","\n");
+    }
+   
+
+   for(unsigned I=0; I<nShockPoints->at(ISH); I++) {
+    for(unsigned IA=0; IA<(*ndof); IA++)
+     { fprintf(file,"%17.15E %s",(*ZroeShu)(IA,I,ISH)," "); }
+    fprintf(file,"%s","\n");
+    }
+   
+
+
+   for(unsigned IFACE=0; IFACE<nShockFaces->at(ISH); IFACE++) {
+    for(unsigned IV=0; IV<3; IV++)
+     { fprintf(file,"%u %s",(*ShFaces)(IV,IFACE,ISH)," "); }
+    fprintf(file,"%s","\n");
+   }
+   
+  }
+
+  // fprintf(file,"%u %s",(*nSpecPoints),"\n");
+  // logfile("\nnSpecPoints: ",(*nSpecPoints), "\n");
+  //
+  // for(unsigned ISPPNTS=0; ISPPNTS<(*nSpecPoints); ISPPNTS++) {
+  //  fprintf(file,"%s %s",(typeSpecPoints->at(ISPPNTS)).c_str(),"\n");
+  //  logfile("Type Special Point: ",typeSpecPoints->at(ISPPNTS), "\n");
+  //
+  //  // internal special point: triple point
+  //  if ((*typeSpecPoints)[ISPPNTS]=="TP") {
+  //   NSHE=4; IDUMMY=IDUMMY+NSHE;
+  //   writeSHinSPPs(NSHE,ISPPNTS);
+  //  }
+  //
+  //  // internal special point: quad point
+  //  else if ((*typeSpecPoints)[ISPPNTS]=="QP") {
+  //   NSHE=5; IDUMMY = IDUMMY+NSHE;
+  //   writeSHinSPPs(NSHE,ISPPNTS);
+  //  }
+  //
+  //  // boundary special point: regular reflection along x
+  //  else if ((*typeSpecPoints)[ISPPNTS]=="RRX") {
+  //   NSHE=2; IDUMMY = IDUMMY+NSHE;
+  //   writeSHinSPPs(NSHE,ISPPNTS);
+  //  }
+  //
+  //  // boundary special point: wall point without reflection
+  //  // floating along X direction
+  //  else if ((*typeSpecPoints)[ISPPNTS]=="WPNRX") {
+  //   NSHE=1; IDUMMY = IDUMMY+NSHE;
+  //   writeSHinSPPs(NSHE,ISPPNTS);
+  //  }
+  //
+  //  // boundary special point: wall point without reflection
+  //  // floating along Y direction
+  //  else if ((*typeSpecPoints)[ISPPNTS]=="WPNRY") {
+  //   NSHE=1; IDUMMY = IDUMMY+NSHE;
+  //   writeSHinSPPs(NSHE,ISPPNTS);
+  //  }
+  //
+  //  // boundary special point: inlet point
+  //  // floating along X direction
+  //  else if ((*typeSpecPoints)[ISPPNTS]=="IPX") {
+  //   NSHE=1; IDUMMY = IDUMMY+NSHE;
+  //   writeSHinSPPs(NSHE,ISPPNTS);
+  //  }
+  //
+  //  // boundary special point: inlet point
+  //  // floating along Y direction
+  //  else if ((*typeSpecPoints)[ISPPNTS]=="IPY") {
+  //   NSHE=1; IDUMMY = IDUMMY+NSHE;
+  //   writeSHinSPPs(NSHE,ISPPNTS);
+  //  }
+  //
+  //  // boundary special point: outlet point
+  //  // floating along X direction
+  //  else if ((*typeSpecPoints)[ISPPNTS]=="OPX") {
+  //   NSHE=1; IDUMMY = IDUMMY+NSHE;
+  //   writeSHinSPPs(NSHE,ISPPNTS);
+  //  }
+  //
+  //  // boundary special point: outlet point
+  //  // floating along Y direction
+  //  else if ((*typeSpecPoints)[ISPPNTS]=="OPY") {
+  //   NSHE=1; IDUMMY = IDUMMY+NSHE;
+  //   writeSHinSPPs(NSHE,ISPPNTS);
+  //  }
+  //
+  //  // boundary special point: end point in supersonic zone
+  //  else if ((*typeSpecPoints)[ISPPNTS]=="EP") {
+  //   NSHE=1; IDUMMY = IDUMMY+NSHE;
+  //   writeSHinSPPs(NSHE,ISPPNTS);
+  //  }
+  //
+  //  // boundary special point: connection between two shocks
+  //  else if ((*typeSpecPoints)[ISPPNTS]=="C") {
+  //   NSHE=2; IDUMMY = IDUMMY+NSHE;
+  //   writeSHinSPPs(NSHE,ISPPNTS);
+  //  }
+
+  //  else { logfile("Condition not implemented");
+  //         cout << "Condition not implemented\n";
+  //         exit(1); }
+  // }
+
+  fclose(file);
+
+
+unsigned ISH=0;
+
+// write the .off file
+ off_file= fopen("shock99.off", "w");
+
+ fprintf(off_file,"%s","OFF");
+
+ fprintf(off_file,"%s %u %s %u %s %u %s","OFF ",nShockPoints->at(ISH)," ",nShockFaces->at(ISH)," ",0,"\n");
+
+
+ for(unsigned I=0; I<nShockPoints->at(ISH); I++) {
+	for(unsigned IA=0; IA<PhysicsInfo::getnbDim(); IA++)
+      { fprintf(file,"%f %s",(*XYZSh)(IA,I,ISH)," "); }
+            // manca upstream
+     fprintf(file,"%s","\n");
+    }
+
+
+ // write the mesh cell nodes
+ for(unsigned IELEM=0;IELEM<nShockFaces->at(ISH);IELEM++) {
+ fprintf(off_file,"%11i %s",3," ");
+
+ for(unsigned K=0;K<3; K++){
+ fprintf(off_file,"%11i %s",(*ShFaces)(K,IELEM,ISH)," ");
+ }
+ fprintf(off_file,"%s","\n");
+ }
+
+ fclose(off_file);
+
+
+
+
+  // write the .plt file
+  shplt_down= fopen("shplt_down.plt", "w");
+
+  fprintf(shplt_down,"%s","TITLE      =  Unstructured grid data\n");
+  fprintf(shplt_down,"%s","VARIABLES  =  \"x0\" \"x1\" \"x2\" ");
+
+    fprintf(shplt_down,"%s","\"p\" \"u\" \"v\" \"w\" \"T\"\n");
+
+  fprintf(shplt_down,"%s %u","ZONE   T=\"P0 ZONE0 Tetra\",N=",nShockPoints->at(ISH));
+  fprintf(shplt_down,"%s %u %s",",E=",nShockFaces->at(ISH),"F=FEPOINT, ET=TRIANGLE, SOLUTIONTIME=0\n");
+
+
+
+          for(unsigned I=0; I<nShockPoints->at(ISH); I++) {
+      for(unsigned IA=0; IA<PhysicsInfo::getnbDim(); IA++)
+       { fprintf(file,"%17.15E %s",(*XYZSh)(IA,I,ISH)," "); }
+      for(unsigned IA=0; IA<(*ndof); IA++)
+      if ((*ZroeShd)(IA,I,ISH)!=(*ZroeShd)(IA,I,ISH)){
+       { fprintf(file,"%17.15E %s",(*ZroeShd)(IA,I-1,ISH)," "); }
+     }
+     else {
+       { fprintf(file,"%17.15E %s",(*ZroeShd)(IA,I,ISH)," "); }
+
+     }
+       // manca upstream
+      fprintf(file,"%s","\n");
+     }
+
+
+  // write the mesh cell nodes
+  for(unsigned IELEM=0;IELEM<nShockFaces->at(ISH);IELEM++) {
+  for(unsigned K=0;K<3; K++){
+  fprintf(shplt_down,"%11i %s",(*ShFaces)(K,IELEM,ISH)+1," ");
+  }
+  fprintf(shplt_down,"%s","\n");
+  }
+
+  fclose(shplt_down);
+
+
+
+
+
+  // write the .plt file
+  shplt_up= fopen("shplt_up.plt", "w");
+
+  fprintf(shplt_up,"%s","TITLE      =  Unstructured grid data\n");
+  fprintf(shplt_up,"%s","VARIABLES  =  \"x0\" \"x1\" \"x2\" ");
+
+    fprintf(shplt_up,"%s","\"p\" \"u\" \"v\" \"w\" \"T\"\n");
+
+  fprintf(shplt_up,"%s %u","ZONE   T=\"P0 ZONE0 Tetra\",N=",nShockPoints->at(ISH));
+  fprintf(shplt_up,"%s %u %s",",E=",nShockFaces->at(ISH),"F=FEPOINT, ET=TRIANGLE, SOLUTIONTIME=0\n");
+
+
+
+          for(unsigned I=0; I<nShockPoints->at(ISH); I++) {
+      for(unsigned IA=0; IA<PhysicsInfo::getnbDim(); IA++)
+       { fprintf(file,"%17.15E %s",(*XYZSh)(IA,I,ISH)," "); }
+      for(unsigned IA=0; IA<(*ndof); IA++)
+      if ((*ZroeShd)(IA,I,ISH)!=(*ZroeShd)(IA,I,ISH)){
+       { fprintf(file,"%17.15E %s",(*ZroeShd)(IA,I-1,ISH)," "); }
+     }
+     else {
+       { fprintf(file,"%17.15E %s",(*ZroeShd)(IA,I,ISH)," "); }
+
+     }
+       // manca upstream
+      fprintf(file,"%s","\n");
+     }
+
+
+  // write the mesh cell nodes
+  for(unsigned IELEM=0;IELEM<nShockFaces->at(ISH);IELEM++) {
+  for(unsigned K=0;K<3; K++){
+  fprintf(shplt_up,"%11i %s",(*ShFaces)(K,IELEM,ISH)+1," ");
+  }
+  fprintf(shplt_up,"%s","\n");
+  }
+
+  fclose(shplt_up);
+  // de-allocate dynamic array
+  freeArray();
+
+  logfile.Close();
+}
+
+//--------------------------------------------------------------------------//
+
+void WriteSdwInfo3D::writeShockTecplot(unsigned I){
+
+unsigned step=I;
+
+LogToScreen(INFO,"WriteSdwInfo3D::write(step " << step << ")\n");
+
+  setMeshData();
+
+  setPhysicsData();
+
+  setAddress();
+
+unsigned ISH=0;
+  // write the .plt file
+
+   double dum;
+   double WShMod;
+   stringstream fileName;
+   fileName.str(string());
+   fileName << "shplt_down_";
+   fileName << step << ".plt";
+   shplt_down = fopen(fileName.str().c_str(),"w");
+
+
+  
+  fprintf(shplt_down,"%s","TITLE      =  Unstructured grid data\n");
+  fprintf(shplt_down,"%s","VARIABLES  =  \"x0\" \"x1\" \"x2\" ");
+
+    fprintf(shplt_down,"%s","\"Wx\" \"Wy\" \"Wz\" \"Wmod\"\n");
+
+  fprintf(shplt_down,"%s %s %s %u","ZONE   T=\" ", fileName.str().c_str(), " \",N=",nShockPoints->at(ISH));
+  fprintf(shplt_down,"%s %u %s",",E=",nShockFaces->at(ISH),"F=FEPOINT, ET=TRIANGLE, SOLUTIONTIME=0\n");
+
+
+
+    for(unsigned I=0; I<nShockPoints->at(ISH); I++) {
+
+    dum = 0;
+    for(unsigned K=0; K<3; K++) { dum = dum + pow((*WSh)(K,I,ISH),2); }
+    WShMod = sqrt(dum);
+
+
+      for(unsigned IA=0; IA<PhysicsInfo::getnbDim(); IA++)
+       { fprintf(shplt_down,"%17.15E %s",(*XYZSh)(IA,I,ISH)," ");} 
+     // for(unsigned IA=0; IA<(*ndof); IA++)
+   //   if ((*ZroeShd)(IA,I,ISH)!=(*ZroeShd)(IA,I,ISH)){
+   //    { fprintf(shplt_down,"%17.15E %s",(*ZroeShd)(IA,I-1,ISH)," "); }
+   //  }
+   //  else {
+	for(unsigned IA=0; IA<PhysicsInfo::getnbDim(); IA++){
+        fprintf(shplt_down,"%17.15E %s",(*WSh)(IA,I,ISH)," ");} 
+	fprintf(shplt_down,"%17.15E %s",WShMod," "); 
+
+   //  }
+       // manca upstream
+      fprintf(shplt_down,"%s","\n");
+     }
+
+
+ // write the mesh cell nodes
+  for(unsigned IELEM=0;IELEM<nShockFaces->at(ISH);IELEM++) {
+  for(unsigned K=0;K<3; K++){
+  fprintf(shplt_down,"%11i %s",(*ShFaces)(K,IELEM,ISH)+1," ");
+  }
+ fprintf(shplt_down,"%s","\n");
+  }
+
+
+  fclose(shplt_down);
+
+/*
+
+  stringstream fileName2;
+
+   fileName2.str(string());
+   fileName2 << "shplt_up_";
+   fileName2 << step << ".plt";
+   shplt_up = fopen(fileName2.str().c_str(),"w");
+
+ 
+
+ 
+
+  fprintf(shplt_up,"%s","TITLE      =  Unstructured grid data\n");
+  fprintf(shplt_up,"%s","VARIABLES  =  \"x0\" \"x1\" \"x2\" ");
+
+    fprintf(shplt_up,"%s","\"p\" \"u\" \"v\" \"w\" \"T\"\n");
+
+  fprintf(shplt_up,"%s %u","ZONE   T=\"P0 ZONE0 Tetra\",N=",nShockPoints->at(ISH));
+  fprintf(shplt_up,"%s %u %s",",E=",nShockFaces->at(ISH),"F=FEPOINT, ET=TRIANGLE, SOLUTIONTIME=0\n");
+
+
+
+          for(unsigned I=0; I<nShockPoints->at(ISH); I++) {
+      for(unsigned IA=0; IA<PhysicsInfo::getnbDim(); IA++)
+       { fprintf(shplt_up,"%17.15E %s",(*XYZSh)(IA,I,ISH)," "); }
+      for(unsigned IA=0; IA<(*ndof); IA++)
+      if ((*ZroeShu)(IA,I,ISH)!=(*ZroeShd)(IA,I,ISH)){
+       { fprintf(shplt_up,"%17.15E %s",(*ZroeShu)(IA,I-1,ISH)," "); }
+     }
+     else {
+       { fprintf(shplt_up,"%17.15E %s",(*ZroeShu)(IA,I,ISH)," "); }
+
+     }
+      fprintf(shplt_up,"%s","\n");
+     }
+
+
+  // write the mesh cell nodes
+  for(unsigned IELEM=0;IELEM<nShockFaces->at(ISH);IELEM++) {
+  for(unsigned K=0;K<3; K++){
+  fprintf(shplt_up,"%11i %s",(*ShFaces)(K,IELEM,ISH)+1," ");
+  }
+  fprintf(shplt_up,"%s","\n");
+  }
+
+  fclose(shplt_up);
+
+*/
+  // de-allocate dynamic array
+  freeArray();
+
+
+
+
+}
+
+//--------------------------------------------------------------------------//
+
+void WriteSdwInfo3D::writeSHinSPPs(unsigned NSHE, unsigned ISPPNTS)
+{
+  for (unsigned K=0; K<NSHE; K++) {
+   fprintf(file,"%i %s",(*SHinSPPs)(0,K,ISPPNTS)," ");
+   fprintf(file,"%i %s",(*SHinSPPs)(1,K,ISPPNTS),"\n");
+   logfile((*SHinSPPs)(0,K,ISPPNTS)," ",(*SHinSPPs)(1,K,ISPPNTS),"\n" );
+  }
+}
+
+//--------------------------------------------------------------------------//
+
+void WriteSdwInfo3D::setAddress()
+{
+  unsigned start;
+  start = npoin->at(0) * PhysicsInfo::getnbDofMax();
+  ZroeShu = new Array3D <double> (PhysicsInfo::getnbDofMax(),
+                                  nShockPoints->at(0),
+                                  PhysicsInfo::getnbShMax(),
+                                  &zroe->at(start));
+  start = npoin->at(0) * PhysicsInfo::getnbDofMax() +
+          PhysicsInfo::getnbShPointsMax() * PhysicsInfo::getnbShMax() *
+          PhysicsInfo::getnbDofMax();
+  ZroeShd = new Array3D <double> (PhysicsInfo::getnbDofMax(),
+                                  nShockPoints->at(0),
+                                  PhysicsInfo::getnbShMax(),
+                                  &zroe->at(start));
+}
+
+//--------------------------------------------------------------------------//
+
+void WriteSdwInfo3D::freeArray()
+{
+  delete ZroeShu; delete ZroeShd;
+}
+
+//--------------------------------------------------------------------------//
+
+void WriteSdwInfo3D::setMeshData()
+{
+  npoin = MeshData::getInstance().getData <vector<unsigned> > ("NPOIN");
+  zroe = MeshData::getInstance().getData <vector <double> > ("ZROE");
+}
+
+//--------------------------------------------------------------------------//
+
+void WriteSdwInfo3D::setPhysicsData()
+{
+  ndof = PhysicsData::getInstance().getData <unsigned> ("NDOF");
+  nShocks = PhysicsData::getInstance().getData <unsigned> ("nShocks");
+  nShockPoints =
+     PhysicsData::getInstance().getData <vector <unsigned> > ("nShockPoints");
+  // nShockEdges =
+  // PhysicsData::getInstance().getData <vector <unsigned> > ("nShockEdges");
+  nShockFaces =
+     PhysicsData::getInstance().getData <vector <unsigned> > ("nShockFaces");
+  nSpecPoints = PhysicsData::getInstance().getData <unsigned> ("nSpecPoints");
+  typeSpecPoints =
+     PhysicsData::getInstance().getData <vector <string> > ("TypeSpecPoints");
+  typeSh = PhysicsData::getInstance().getData <vector <string> > ("TYPESH");
+  XYZSh = PhysicsData::getInstance().getData <Array3D <double> > ("XYZSH");
+  SHinSPPs =
+       PhysicsData::getInstance().getData <Array3D <unsigned> > ("SHinSPPs");
+  WSh = PhysicsData::getInstance().getData <Array3D<double> > ("WSH");
+  ShFaces = PhysicsData::getInstance().getData <Array3D <unsigned> > ("ShFaces");
+}
+
+//--------------------------------------------------------------------------//
+
+} // namespace ShockFitting

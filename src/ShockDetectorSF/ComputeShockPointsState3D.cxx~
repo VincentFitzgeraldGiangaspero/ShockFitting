@@ -1,0 +1,711 @@
+// Copyright (C) 2014 von Karman Institute for Fluid Dynamics, Belgium
+//
+// This software is distributed under the terms of the
+// GNU Lesser General Public License version 3 (LGPLv3).
+// See doc/lgpl.txt and doc/gpl.txt for the license text.
+
+// vincent 31/01/2017
+
+#include "ShockDetectorSF/ComputeShockPointsState3D.hh"
+#include "Framework/ChemicalInfo.hh"
+#include "Framework/MeshData.hh"
+#include "Framework/PhysicsData.hh"
+#include "Framework/PhysicsInfo.hh"
+#include "MathTools/Area.hh"
+#include "MathTools/Jcycl.hh"
+#include "MathTools/MinMax.hh"
+
+//--------------------------------------------------------------------------//
+
+using namespace std;
+
+//--------------------------------------------------------------------------//
+
+namespace ShockFitting {
+
+  //--------------------------------------------------------------------------//
+
+  ComputeShockPointsState3D::ComputeShockPointsState3D()
+  {
+  }
+
+  //--------------------------------------------------------------------------//
+
+  ComputeShockPointsState3D::~ComputeShockPointsState3D()
+  {
+  }
+
+  //--------------------------------------------------------------------------//
+
+  void ComputeShockPointsState3D::setup(double shLayerThick)
+  {
+    cout << "     => ComputeShockPointsState3D::setup()\n";
+
+
+    setMeshData();
+    setPhysicsData();
+
+    // assign starting pointers to array
+    setAddress();
+
+    // resize vectors and array
+    setSize();
+
+    // set the distance used to extract the upstream and downstream coordinates
+    setShockLayerThickness(shLayerThick);
+
+    logfile.Open(getClassName());
+  }
+
+  //--------------------------------------------------------------------------//
+
+  void ComputeShockPointsState3D::unsetup()
+  {
+    cout << "     => ComputeShockPointsState3D::unsetup()\n";
+
+    logfile.Close();
+
+    // de-allocate dynamic array
+    freeArray();
+  }
+
+  //--------------------------------------------------------------------------//
+
+  void ComputeShockPointsState3D::
+  extractDownstreamAndUpstreamPoints(Array3D<double> normals)
+  {
+    cout << "     => ComputeShockPointsState3D::extractDownstreamAndUpstreamPoints()\n";
+
+    cout << "m_shockLayerThickness = " << m_shockLayerThickness << "\n";
+
+    m_shockLayerThickness *= MeshData::getInstance().getDXCELL();  //
+
+
+    cout << "m_shockLayerThickness = " << m_shockLayerThickness << "\n";
+    cout << "MeshData::getInstance().getDXCELL() = " << MeshData::getInstance().getDXCELL() << "\n";
+
+
+    vector<double> X(npoin->at(0));				// aggiunte le Z
+    vector<double> Y(npoin->at(0));
+    vector<double> Z(npoin->at(0));
+    for(unsigned IPOIN=0;IPOIN<npoin->at(0);IPOIN++) {
+      X.at(IPOIN) = (*XYZ)(0,IPOIN);
+      Y.at(IPOIN) = (*XYZ)(1,IPOIN);
+      Z.at(IPOIN) = (*XYZ)(2,IPOIN);
+    }
+
+    const double minDomainXCoordinate = *min_element(X.begin(),X.end());
+    const double maxDomainXCoordinate = *max_element(X.begin(),X.end());
+    const double minDomainYCoordinate = *min_element(Y.begin(),Y.end());
+    const double maxDomainYCoordinate = *max_element(Y.begin(),Y.end());
+    const double minDomainZCoordinate = *min_element(Z.begin(),Z.end());
+    const double maxDomainZCoordinate = *max_element(Z.begin(),Z.end());
+
+
+    double m_Xu, m_Yu;
+    double m_Xd, m_Yd;
+    double m_Zu, m_Zd;
+
+    double counter_out=0;
+
+    cout << "nShockPoints->at(0) " << nShockPoints->at(0) << "\n";
+
+    for(unsigned ISH=0;ISH<(*nShocks);ISH++) {
+      unsigned m_shPoint = 0;
+
+      for(unsigned ISHPOIN=0;ISHPOIN<nShockPoints->at(ISH);ISHPOIN++) {
+        m_Xu = (*XYZSh)(0,ISHPOIN,ISH) +
+        normals(0,ISHPOIN,ISH) * m_shockLayerThickness;
+        m_Yu = (*XYZSh)(1,ISHPOIN,ISH) +
+        normals(1,ISHPOIN,ISH) * m_shockLayerThickness;
+        m_Zu = (*XYZSh)(2,ISHPOIN,ISH) +
+        normals(2,ISHPOIN,ISH) * m_shockLayerThickness;
+
+        m_Xd = (*XYZSh)(0,ISHPOIN,ISH) -
+        normals(0,ISHPOIN,ISH) * m_shockLayerThickness;
+        m_Yd = (*XYZSh)(1,ISHPOIN,ISH) -
+        normals(1,ISHPOIN,ISH) * m_shockLayerThickness;
+        m_Zd = (*XYZSh)(2,ISHPOIN,ISH) -
+        normals(2,ISHPOIN,ISH) * m_shockLayerThickness;
+
+        // check if the extracted shock points are out of the domain
+        // they are erased
+        if(m_Xu>=minDomainXCoordinate && m_Xu<=maxDomainXCoordinate &&
+          m_Yu>=minDomainYCoordinate && m_Yu<=maxDomainYCoordinate &&
+          m_Zu>=minDomainZCoordinate && m_Zu<=maxDomainZCoordinate &&
+          m_Xd>=minDomainXCoordinate && m_Xd<=maxDomainXCoordinate &&
+          m_Yd>=minDomainYCoordinate && m_Yd<=maxDomainYCoordinate &&
+          m_Zd>=minDomainZCoordinate && m_Zd<=maxDomainZCoordinate  )
+          {
+            XYZShu(0,m_shPoint,ISH) = m_Xu; XYZShu(1,m_shPoint,ISH) = m_Yu; XYZShu(2,m_shPoint,ISH) = m_Zu;
+            XYZShd(0,m_shPoint,ISH) = m_Xd; XYZShd(1,m_shPoint,ISH) = m_Yd; XYZShd(2,m_shPoint,ISH) = m_Zd;
+            (*XYZSh)(0,m_shPoint,ISH) = (*XYZSh)(0,ISHPOIN,ISH);
+            (*XYZSh)(1,m_shPoint,ISH) = (*XYZSh)(1,ISHPOIN,ISH);
+            (*XYZSh)(2,m_shPoint,ISH) = (*XYZSh)(2,ISHPOIN,ISH);
+            ++m_shPoint;
+          }
+          else {
+            cout << "     => ComputeShockPointsState3D:: (!) warning => IDpoint ";
+            cout << ISHPOIN+1 << " is out of the domain\n";
+            cout << "\n" <<  "         up= " << m_Xu << "," << m_Yu << "," << m_Zu;
+            cout << "; down= " << m_Xd << "," << m_Yd << "," << m_Zd;
+            cout << " has been erased\n\n";
+            counter_out++;
+          }
+
+
+        }
+        // update the number of shock points because some of them could have been erased
+        nShockPoints->at(ISH) = m_shPoint;
+        // nShockEdges->at(ISH) = nShockPoints->at(ISH)-1;
+        cout << " nShockPoints->at(0) " << nShockPoints->at(ISH) << "\n";
+        cout << "counter_out " << counter_out << "\n";
+      }
+
+
+      // plot downstream and upstream coordinates
+      // it is useful to check if they are extracted within the shock layer
+      FILE* plotState;
+      stringstream fileName;
+
+      for(unsigned ISH=0;ISH<(*nShocks);ISH++) {
+        fileName.str(string());
+        fileName << "./log/UpstreamDownstreamCoor_ShNb_";
+        fileName << ISH+1 << ".dat";
+        plotState = fopen(fileName.str().c_str(),"w");
+
+        fprintf(plotState,"%s","TITLE = Upstream and downstream coor\n");
+        fprintf(plotState,"%s","VARIABLES = \"x0\" \"x1\" \"x2\"\n");
+        fprintf(plotState,"%s","ZONE T = \"Up and Down coord\"\n");
+        fprintf(plotState,"%s"," STRANDID=0, SOLUTIONTIME=0\n");
+        fprintf(plotState,"%s %u %s","I= ",nShockPoints->at(ISH),", J=3, K=1, ZONETYPE=Ordered\n");
+        fprintf(plotState,"%s","DATAPACKING=POINT\n");
+        fprintf(plotState,"%s","DT = (SINGLE, SINGLE)\n");
+
+        for(unsigned ISHPOIN=0;ISHPOIN<nShockPoints->at(ISH);ISHPOIN++) {
+          fprintf(plotState,"%22.14F",XYZShu(0,ISHPOIN,ISH));
+          fprintf(plotState,"%22.14F",XYZShu(1,ISHPOIN,ISH));
+          fprintf(plotState,"%22.14F",XYZShu(2,ISHPOIN,ISH));
+          fprintf(plotState,"%s","\n");
+
+        }
+
+        for(unsigned ISHPOIN=0;ISHPOIN<nShockPoints->at(ISH);ISHPOIN++) {
+          fprintf(plotState,"%22.14F",XYZShd(0,ISHPOIN,ISH));
+          fprintf(plotState,"%22.14F",XYZShd(1,ISHPOIN,ISH));
+          fprintf(plotState,"%22.14F",XYZShd(2,ISHPOIN,ISH));
+          fprintf(plotState,"%s","\n");
+        }
+
+        fclose(plotState);
+      }
+    }
+
+  //--------------------------------------------------------------------------//
+
+  void ComputeShockPointsState3D::interpDownstreamAndUpstreamState()
+  {
+    cout << "     => ComputeShockPointsState3D::interpDownstreamAndUpstreamState()\n";
+
+    unsigned ISH=0;
+
+    std::vector<Point_3> shock_points_d(nShockPoints->at(ISH));
+    std::vector<Point_3> shock_points_u(nShockPoints->at(ISH));
+
+
+
+    // leggi gli shock_points downstream e upstream
+    for(unsigned ISHPOIN=0;ISHPOIN<nShockPoints->at(ISH);ISHPOIN++) {
+      shock_points_d.at(ISHPOIN)=Point_3(XYZShd(0,ISHPOIN,ISH),XYZShd(1,ISHPOIN,ISH),XYZShd(2,ISHPOIN,ISH));
+      shock_points_u.at(ISHPOIN)=Point_3(XYZShu(0,ISHPOIN,ISH),XYZShu(1,ISHPOIN,ISH),XYZShu(2,ISHPOIN,ISH));
+    }
+
+
+    std::vector<Point_3> mesh_points;
+    mesh_points.resize(npoin->at(0));
+
+    for(unsigned IPOIN=0;IPOIN<npoin->at(0);IPOIN++) {
+      mesh_points.at(IPOIN)=Point_3((*XYZ)(0,IPOIN),(*XYZ)(1,IPOIN),(*XYZ)(2,IPOIN));
+    }
+
+
+
+    // K-neighborous search from CGAL, to get back the ID of the closest node of the mesh
+
+    My_point_property_map ppmap(mesh_points);
+
+    // Insert number_of_data_points in the tree
+    Tree tree(
+      boost::counting_iterator<std::size_t>(0),
+      boost::counting_iterator<std::size_t>(mesh_points.size()),
+      Splitter(),
+      Traits(ppmap));
+
+    Distance tr_dist(ppmap);
+    // number of neighbors points
+    const unsigned int K=5;
+
+    // working variables and vectors
+
+    double vol_base, vol_0, vol_1, vol_2, vol_3;
+    double s, t;
+    unsigned I;
+
+    MinMax <double> m;
+    vector<double> ratio(4);
+
+
+
+//  DOWNSTREAM
+    // boolean variables evaluating if the shock point has been located
+    // in the mesh connectivity
+    bool found;
+
+    int counter_downstream=0;
+    int counter_close =0;
+
+    FILE* FOUNDcells_down;
+    FOUNDcells_down = fopen("log/FOUNDcells_down.dat","w");
+
+    fprintf(FOUNDcells_down,"%s","TITLE = FOUNDcells_down containing shock points\n");
+
+
+    for(unsigned ISH=0;ISH<(*nShocks);ISH++) {
+
+
+
+      for(unsigned ISHPOIN=0;ISHPOIN<nShockPoints->at(ISH);ISHPOIN++) {
+
+        found = false;
+        counter_close=0;
+        K_Neighbor_search search(tree, shock_points_d[ISHPOIN], K,0,true,tr_dist);
+
+        fprintf(FOUNDcells_down,"%s","------------------------------------------\n");
+        fprintf(FOUNDcells_down,"%s %u %s %u %s " ,"The ", K , " nearest mesh points to the downstream shock point ",
+        ISHPOIN+1, " with coordinates ");
+        fprintf(FOUNDcells_down, "%22.14f %22.14f %22.14f %s" ,XYZShd(0,ISHPOIN,ISH) , XYZShd(1,ISHPOIN,ISH) , XYZShd(2,ISHPOIN,ISH) , "\n");
+
+        if (found==false){
+          for(K_Neighbor_search::iterator it = search.begin(); it != search.end(); it++){
+            std::cout << "-near-point " << it->first << " : "
+            << " at distance " << tr_dist.inverse_of_transformed_distance(it->second) << std::endl;
+            std::cout << " --- \n";
+
+            fprintf(FOUNDcells_down,"%s %u %s %u %s %f %s %f %s %f %s"," -> ", counter_close , " -near-point ",
+            it->first, " : ", (*XYZ)(0,it->first), " ", (*XYZ)(1,it->first), " ", (*XYZ)(2,it->first),"\n");
+            fprintf(FOUNDcells_down, "%s %f %s"," at distance " , tr_dist.inverse_of_transformed_distance(it->second) , "\n");
+
+            counter_close ++;
+            // ISHPOIN é l'ID dello shock point
+            // shock_points[ISHPOIN] sono invece le coordinate dello shock point
+            // tr_dist.inverse_of_transformed_distance(it->second) é la distanza tra i punti
+            // (mesh_points[it->first]) sono le coordinate dello closest point
+            // it->first é l'ID del closest point
+            //
+            // (*XYZ)(0,it->first);
+            // (*XYZ)(1,it->first);
+            // (*XYZ)(2,it->first);
+            // ciclo su celle e vertici per trovare cella che contiene il closest point
+            for(unsigned IELEM=0;IELEM<nelem->at(0);IELEM++) {
+              if (found!=true){
+                for(unsigned IV=0; IV<(*nvt); IV++) {
+                  if ( it->first ==(*celnod)(IV,IELEM)-1){
+
+	
+                    vol_base = volume(Point_3((*XYZ)(0,(*celnod)(0,IELEM)-1),(*XYZ)(1,(*celnod)(0,IELEM)-1),(*XYZ)(2,(*celnod)(0,IELEM)-1)),
+                    Point_3((*XYZ)(0,(*celnod)(1,IELEM)-1),(*XYZ)(1,(*celnod)(1,IELEM)-1),(*XYZ)(2,(*celnod)(1,IELEM)-1)),
+                    Point_3((*XYZ)(0,(*celnod)(2,IELEM)-1),(*XYZ)(1,(*celnod)(2,IELEM)-1),(*XYZ)(2,(*celnod)(2,IELEM)-1)),
+                    Point_3((*XYZ)(0,(*celnod)(3,IELEM)-1),(*XYZ)(1,(*celnod)(3,IELEM)-1),(*XYZ)(2,(*celnod)(3,IELEM)-1)));
+
+                    vol_0= volume(shock_points_d[ISHPOIN],
+                    Point_3((*XYZ)(0,(*celnod)(1,IELEM)-1),(*XYZ)(1,(*celnod)(1,IELEM)-1),(*XYZ)(2,(*celnod)(1,IELEM)-1)),
+                    Point_3((*XYZ)(0,(*celnod)(2,IELEM)-1),(*XYZ)(1,(*celnod)(2,IELEM)-1),(*XYZ)(2,(*celnod)(2,IELEM)-1)),
+                    Point_3((*XYZ)(0,(*celnod)(3,IELEM)-1),(*XYZ)(1,(*celnod)(3,IELEM)-1),(*XYZ)(2,(*celnod)(3,IELEM)-1)));
+
+                    vol_1=volume(Point_3((*XYZ)(0,(*celnod)(0,IELEM)-1),(*XYZ)(1,(*celnod)(0,IELEM)-1),(*XYZ)(2,(*celnod)(0,IELEM)-1)),
+                    shock_points_d[ISHPOIN],
+                    Point_3((*XYZ)(0,(*celnod)(2,IELEM)-1),(*XYZ)(1,(*celnod)(2,IELEM)-1),(*XYZ)(2,(*celnod)(2,IELEM)-1)),
+                    Point_3((*XYZ)(0,(*celnod)(3,IELEM)-1),(*XYZ)(1,(*celnod)(3,IELEM)-1),(*XYZ)(2,(*celnod)(3,IELEM)-1)));
+
+                    vol_2=volume(Point_3((*XYZ)(0,(*celnod)(0,IELEM)-1),(*XYZ)(1,(*celnod)(0,IELEM)-1),(*XYZ)(2,(*celnod)(0,IELEM)-1)),
+                    Point_3((*XYZ)(0,(*celnod)(1,IELEM)-1),(*XYZ)(1,(*celnod)(1,IELEM)-1),(*XYZ)(2,(*celnod)(1,IELEM)-1)),
+                    shock_points_d[ISHPOIN],
+                    Point_3((*XYZ)(0,(*celnod)(3,IELEM)-1),(*XYZ)(1,(*celnod)(3,IELEM)-1),(*XYZ)(2,(*celnod)(3,IELEM)-1)));
+
+
+                    vol_3=volume(Point_3((*XYZ)(0,(*celnod)(0,IELEM)-1),(*XYZ)(1,(*celnod)(0,IELEM)-1),(*XYZ)(2,(*celnod)(0,IELEM)-1)),
+                    Point_3((*XYZ)(0,(*celnod)(1,IELEM)-1),(*XYZ)(1,(*celnod)(1,IELEM)-1),(*XYZ)(2,(*celnod)(1,IELEM)-1)),
+                    Point_3((*XYZ)(0,(*celnod)(2,IELEM)-1),(*XYZ)(1,(*celnod)(2,IELEM)-1),(*XYZ)(2,(*celnod)(2,IELEM)-1)),
+                    shock_points_d[ISHPOIN]);
+
+                    ratio.at(0)=vol_0/vol_base;
+                    ratio.at(1)=vol_1/vol_base;
+                    ratio.at(2)=vol_2/vol_base;
+                    ratio.at(3)=vol_3/vol_base;
+
+                    // if (( s>= 0 && s<= 1) && ( t>= 0 && t<= 1)) {
+                    if (ratio.at(0)>=0&&ratio.at(0)<=1){
+                      if (ratio.at(1)>0&&ratio.at(1)<1){
+                        if (ratio.at(2)>0&&ratio.at(2)<1){
+                          if (ratio.at(3)>0&&ratio.at(3)<1){
+                            found = true;
+                            fprintf(FOUNDcells_down,"%s","-------\n");
+                            fprintf(FOUNDcells_down,"%s"," CELL that contains ");
+                            fprintf(FOUNDcells_down,"%s %u %s ","CELL NUMBER ", IELEM , " \n");
+                            fprintf(FOUNDcells_down,"%s %u %s %f %s %f %s %f %s","CELL vertex 1 ", (*celnod)(0,IELEM) , " : " ,
+                              (*XYZ)(0,(*celnod)(0,IELEM)-1), "  ", (*XYZ)(1,(*celnod)(0,IELEM)-1), "  ", (*XYZ)(2,(*celnod)(0,IELEM)-1), " \n");
+                            fprintf(FOUNDcells_down,"%s %u %s %f %s %f %s %f %s","CELL vertex 2 ", (*celnod)(1,IELEM) , " : " ,
+                              (*XYZ)(0,(*celnod)(1,IELEM)-1), "  ", (*XYZ)(1,(*celnod)(1,IELEM)-1), "  ", (*XYZ)(2,(*celnod)(1,IELEM)-1), " \n");
+                            fprintf(FOUNDcells_down,"%s %u %s %f %s %f %s %f %s","CELL vertex 3 ", (*celnod)(2,IELEM) , " : " ,
+                              (*XYZ)(0,(*celnod)(2,IELEM)-1), "  ", (*XYZ)(1,(*celnod)(2,IELEM)-1), "  ", (*XYZ)(2,(*celnod)(2,IELEM)-1), " \n");
+                            fprintf(FOUNDcells_down,"%s %u %s %f %s %f %s %f %s","CELL vertex 4 ", (*celnod)(3,IELEM) , " : " ,
+                              (*XYZ)(0,(*celnod)(3,IELEM)-1), "  ", (*XYZ)(1,(*celnod)(3,IELEM)-1), "  ", (*XYZ)(2,(*celnod)(3,IELEM)-1), " \n");
+
+                            fprintf(FOUNDcells_down,"%s %f %s ","vol_base ", vol_base , " \n");
+                            fprintf(FOUNDcells_down,"%s %f %s ","vol_0 ", vol_0 , " \n");
+                            fprintf(FOUNDcells_down,"%s %f %s ","vol_1 ", vol_1 , " \n");
+                            fprintf(FOUNDcells_down,"%s %f %s ","vol_2 ", vol_2 , " \n");
+                            fprintf(FOUNDcells_down,"%s %f %s ","vol_3 ", vol_3 , " \n");
+                            counter_downstream++;
+                            for(unsigned IDOF=0;IDOF<(*ndof);IDOF++) { (*ZRoeShd)(IDOF,ISHPOIN,ISH) = 0;}
+                            for(unsigned IV=0; IV<(*nvt); IV++) {
+                              I = (*celnod)(IV,IELEM);
+                              for(unsigned IDOF=0;IDOF<(*ndof);IDOF++) {
+                                (*ZRoeShd)(IDOF,ISHPOIN,ISH) =
+                                (*ZRoeShd)(IDOF,ISHPOIN,ISH) + ratio.at(IV) * (*zroe)(IDOF,I-1);
+                              }
+                            }
+                            break;
+                          } // if 1
+                        }// if 2
+                      }//if 3
+                    }//if 4
+                    }// if first
+                  }// for NVT
+                }// if found ! true
+              } // for IELEM<nelem->at(0)
+            } // for IELEM
+          }
+
+          if(found==false) {
+            cout << "        ComputeShockPointsState3D::error => Search failed for shock point:\n";
+            cout << "                                  " << ISHPOIN << "\n";
+            cout << " " << XYZShd(0,ISHPOIN,ISH) << endl;
+            cout << " " << XYZShd(1,ISHPOIN,ISH) << endl;
+            cout << " " << XYZShd(2,ISHPOIN,ISH) << endl;
+            cout << "\n  -> Try to reduce the shock layer thickness\n";
+             exit(1);
+          } // if found=false
+
+        } // for K_Neighbor_search
+      }// for shock point
+
+
+    cout << "downstream state size " << nShockPoints->at(ISH) << "\n";
+    cout << "counter_downstream " << counter_downstream << "\n";
+
+    fclose(FOUNDcells_down);
+
+
+    // boolean variables evaluating if the shock point has been located
+    // in the mesh connectivity
+
+
+    int counter_upstream=0;
+
+
+    FILE* FOUNDcells_up;
+    FOUNDcells_up = fopen("log/FOUNDcells_up.dat","w");
+
+    fprintf(FOUNDcells_up,"%s","TITLE = FOUNDcells_up containing shock points\n");
+
+
+    for(unsigned ISH=0;ISH<(*nShocks);ISH++) {
+
+      for(unsigned ISHPOIN=0;ISHPOIN<nShockPoints->at(ISH);ISHPOIN++) {
+
+        found = false;
+        counter_close=0;
+        K_Neighbor_search search(tree, shock_points_u[ISHPOIN], K,0,true,tr_dist);
+
+        fprintf(FOUNDcells_up,"%s","------------------------------------------\n");
+        fprintf(FOUNDcells_up,"%s %u %s %u %s " ,"The ", K , " nearest mesh points to the upstream shock point ",
+        ISHPOIN+1, " with coordinates ");
+        fprintf(FOUNDcells_up, "%22.14f %22.14f %22.14f %s" ,XYZShu(0,ISHPOIN,ISH) , XYZShu(1,ISHPOIN,ISH) , XYZShu(2,ISHPOIN,ISH) , "\n");
+
+
+
+        if (found==false){
+          for(K_Neighbor_search::iterator it = search.begin(); it != search.end(); it++){
+
+            fprintf(FOUNDcells_up,"%s %u %s %u %s %f %s %f %s %f %s"," -> ", counter_close , " -near-point ",
+            it->first, " : ", (*XYZ)(0,it->first), " ", (*XYZ)(1,it->first), " ", (*XYZ)(2,it->first),"\n");
+            fprintf(FOUNDcells_up, "%s %f %s"," at distance " , tr_dist.inverse_of_transformed_distance(it->second) , "\n");
+
+            // ISHPOIN é l'ID dello shock point
+            // shock_points[ISHPOIN] sono invece le coordinate dello shock point
+            // tr_dist.inverse_of_transformed_distance(it->second) é la distanza tra i punti
+            // (mesh_points[it->first]) sono le coordinate dello closest point
+            // it->first é l'ID del closest point
+            //
+            // (*XYZ)(0,it->first);
+            // (*XYZ)(1,it->first);
+            // (*XYZ)(2,it->first);
+            // ciclo su celle e vertici per trovare cella che contiene il closest point
+            for(unsigned IELEM=0;IELEM<nelem->at(0);IELEM++) {
+              if (found!=true){
+                for(unsigned IV=0; IV<(*nvt); IV++) {
+                  if ( it->first ==(*celnod)(IV,IELEM)-1){
+
+                    vol_base = volume(Point_3((*XYZ)(0,(*celnod)(0,IELEM)-1),(*XYZ)(1,(*celnod)(0,IELEM)-1),(*XYZ)(2,(*celnod)(0,IELEM)-1)),
+                    Point_3((*XYZ)(0,(*celnod)(1,IELEM)-1),(*XYZ)(1,(*celnod)(1,IELEM)-1),(*XYZ)(2,(*celnod)(1,IELEM)-1)),
+                    Point_3((*XYZ)(0,(*celnod)(2,IELEM)-1),(*XYZ)(1,(*celnod)(2,IELEM)-1),(*XYZ)(2,(*celnod)(2,IELEM)-1)),
+                    Point_3((*XYZ)(0,(*celnod)(3,IELEM)-1),(*XYZ)(1,(*celnod)(3,IELEM)-1),(*XYZ)(2,(*celnod)(3,IELEM)-1)));
+
+                    vol_0= volume(shock_points_u[ISHPOIN],
+                    Point_3((*XYZ)(0,(*celnod)(1,IELEM)-1),(*XYZ)(1,(*celnod)(1,IELEM)-1),(*XYZ)(2,(*celnod)(1,IELEM)-1)),
+                    Point_3((*XYZ)(0,(*celnod)(2,IELEM)-1),(*XYZ)(1,(*celnod)(2,IELEM)-1),(*XYZ)(2,(*celnod)(2,IELEM)-1)),
+                    Point_3((*XYZ)(0,(*celnod)(3,IELEM)-1),(*XYZ)(1,(*celnod)(3,IELEM)-1),(*XYZ)(2,(*celnod)(3,IELEM)-1)));
+
+                    vol_1=volume(Point_3((*XYZ)(0,(*celnod)(0,IELEM)-1),(*XYZ)(1,(*celnod)(0,IELEM)-1),(*XYZ)(2,(*celnod)(0,IELEM)-1)),
+                    shock_points_u[ISHPOIN],
+                    Point_3((*XYZ)(0,(*celnod)(2,IELEM)-1),(*XYZ)(1,(*celnod)(2,IELEM)-1),(*XYZ)(2,(*celnod)(2,IELEM)-1)),
+                    Point_3((*XYZ)(0,(*celnod)(3,IELEM)-1),(*XYZ)(1,(*celnod)(3,IELEM)-1),(*XYZ)(2,(*celnod)(3,IELEM)-1)));
+
+                    vol_2=volume(Point_3((*XYZ)(0,(*celnod)(0,IELEM)-1),(*XYZ)(1,(*celnod)(0,IELEM)-1),(*XYZ)(2,(*celnod)(0,IELEM)-1)),
+                    Point_3((*XYZ)(0,(*celnod)(1,IELEM)-1),(*XYZ)(1,(*celnod)(1,IELEM)-1),(*XYZ)(2,(*celnod)(1,IELEM)-1)),
+                    shock_points_u[ISHPOIN],
+                    Point_3((*XYZ)(0,(*celnod)(3,IELEM)-1),(*XYZ)(1,(*celnod)(3,IELEM)-1),(*XYZ)(2,(*celnod)(3,IELEM)-1)));
+
+
+                    vol_3=volume(Point_3((*XYZ)(0,(*celnod)(0,IELEM)-1),(*XYZ)(1,(*celnod)(0,IELEM)-1),(*XYZ)(2,(*celnod)(0,IELEM)-1)),
+                    Point_3((*XYZ)(0,(*celnod)(1,IELEM)-1),(*XYZ)(1,(*celnod)(1,IELEM)-1),(*XYZ)(2,(*celnod)(1,IELEM)-1)),
+                    Point_3((*XYZ)(0,(*celnod)(2,IELEM)-1),(*XYZ)(1,(*celnod)(2,IELEM)-1),(*XYZ)(2,(*celnod)(2,IELEM)-1)),
+                    shock_points_u[ISHPOIN]);
+
+                    ratio.at(0)=vol_0/vol_base;
+                    ratio.at(1)=vol_1/vol_base;
+                    ratio.at(2)=vol_2/vol_base;
+                    ratio.at(3)=vol_3/vol_base;
+
+                    // if (( s>= 0 && s<= 1) && ( t>= 0 && t<= 1)) {
+                    if (ratio.at(0)>=0&&ratio.at(0)<=1){
+                      if (ratio.at(1)>0&&ratio.at(1)<1){
+                        if (ratio.at(2)>0&&ratio.at(2)<1){
+                          if (ratio.at(3)>0&&ratio.at(3)<1){
+                            found = true;
+                            fprintf(FOUNDcells_up,"%s","-------\n");
+                            fprintf(FOUNDcells_up,"%s"," CELL that contains ");
+                            fprintf(FOUNDcells_up,"%s %u %s ","CELL NUMBER ", IELEM , " \n");
+                            fprintf(FOUNDcells_up,"%s %u %s %f %s %f %s %f %s","CELL vertex 1 ", (*celnod)(0,IELEM) , " : " ,
+                              (*XYZ)(0,(*celnod)(0,IELEM)-1), "  ", (*XYZ)(1,(*celnod)(0,IELEM)-1), "  ", (*XYZ)(2,(*celnod)(0,IELEM)-1), " \n");
+                            fprintf(FOUNDcells_up,"%s %u %s %f %s %f %s %f %s","CELL vertex 2 ", (*celnod)(1,IELEM) , " : " ,
+                              (*XYZ)(0,(*celnod)(1,IELEM)-1), "  ", (*XYZ)(1,(*celnod)(1,IELEM)-1), "  ", (*XYZ)(2,(*celnod)(1,IELEM)-1), " \n");
+                            fprintf(FOUNDcells_up,"%s %u %s %f %s %f %s %f %s","CELL vertex 3 ", (*celnod)(2,IELEM) , " : " ,
+                              (*XYZ)(0,(*celnod)(2,IELEM)-1), "  ", (*XYZ)(1,(*celnod)(2,IELEM)-1), "  ", (*XYZ)(2,(*celnod)(2,IELEM)-1), " \n");
+                            fprintf(FOUNDcells_up,"%s %u %s %f %s %f %s %f %s","CELL vertex 4 ", (*celnod)(3,IELEM) , " : " ,
+                              (*XYZ)(0,(*celnod)(3,IELEM)-1), "  ", (*XYZ)(1,(*celnod)(3,IELEM)-1), "  ", (*XYZ)(2,(*celnod)(3,IELEM)-1), " \n");
+
+                            fprintf(FOUNDcells_up,"%s %f %s ","vol_base ", vol_base , " \n");
+                            fprintf(FOUNDcells_up,"%s %f %s ","vol_0 ", vol_0 , " \n");
+                            fprintf(FOUNDcells_up,"%s %f %s ","vol_1 ", vol_1 , " \n");
+                            fprintf(FOUNDcells_up,"%s %f %s ","vol_2 ", vol_2 , " \n");
+                            fprintf(FOUNDcells_up,"%s %f %s ","vol_3 ", vol_3 , " \n");
+                            counter_upstream++;
+                            for(unsigned IDOF=0;IDOF<(*ndof);IDOF++) { (*ZRoeShu)(IDOF,ISHPOIN,ISH) = 0;}
+                            for(unsigned IV=0; IV<(*nvt); IV++) {
+                              I = (*celnod)(IV,IELEM);
+                              for(unsigned IDOF=0;IDOF<(*ndof);IDOF++) {
+                                (*ZRoeShu)(IDOF,ISHPOIN,ISH) =
+                                (*ZRoeShu)(IDOF,ISHPOIN,ISH) + ratio.at(IV) * (*zroe)(IDOF,I-1);
+                              }
+                            }
+                            break;
+                          } // if 1
+                        }// if 2
+                      }//if 3
+                    }//if 4
+                    }// if first
+                  }// for NVT
+                }// if found ! true
+              } // for IELEM<nelem->at(0)
+            } // for IELEM
+          }
+
+          if(found==false) {
+            cout << "        ComputeShockPointsState3D::error => Search failed for shock point:\n";
+            cout << "                                  " << ISHPOIN << "\n";
+            cout << " " << XYZShu(0,ISHPOIN,ISH) << endl;
+            cout << " " << XYZShu(1,ISHPOIN,ISH) << endl;
+            cout << " " << XYZShu(2,ISHPOIN,ISH) << endl;
+            cout << "\n  -> Try to reduce the shock layer thickness\n";
+             exit(1);
+          } // if found=false
+
+        } // for K_Neighbor_search
+
+      }// for shock point upstream
+
+
+
+    cout << "upstream state size " << nShockPoints->at(ISH) << "\n";
+    cout << "counter_upstream " << counter_upstream << "\n";
+
+    fclose(FOUNDcells_up);
+
+
+
+
+  }
+
+  //--------------------------------------------------------------------------//
+
+  void ComputeShockPointsState3D::assignDownstreamAndUpstreamState()
+  {
+    cout << "     => ComputeShockPointsState3D::assignDownstreamAndUpstreamState()\n";
+
+    logfile("Assign downstream and upstream state\n");
+
+    logfile("Number of shocks: ",(*nShocks),"\n");
+
+    // define varID variable used to point the parameter vector variables
+    // that assign upstream and downstream state
+    // varID is chosen according to the gas model
+    unsigned varID;
+    if(ChemicalInfo::getModel()=="PG") { varID = 0; }
+    else if (ChemicalInfo::getModel()=="TCneq") { varID = (*nsp)+1; }
+    else {
+      cout << "        ComputeShockPointsState3D::error => gas model not implemented\n";
+      exit(1);
+    }
+
+    double dum;
+
+    for(unsigned ISH=0;ISH<(*nShocks);ISH++) {
+      logfile("\n------------------------\n");
+      logfile("Shock nb => ",ISH+1,"\n");
+      logfile("number of shock points is => ",nShockPoints->at(ISH),"\n\n");
+
+      for(unsigned ISHPOIN=0;ISHPOIN<nShockPoints->at(ISH);ISHPOIN++) {
+
+        logfile("Shock point: ",ISHPOIN+1);
+        logfile(" -> upstream = ",(*ZRoeShu)(varID,ISHPOIN,ISH));
+        logfile(", downstream = ",(*ZRoeShd)(varID,ISHPOIN,ISH),"\n");
+        if( (*ZRoeShu)(varID,ISHPOIN,ISH)>(*ZRoeShd)(varID,ISHPOIN,ISH)) {
+          logfile("(!) downstream and upstream state are inverted\n");
+          for(unsigned IDOF=0;IDOF<(*ndof);IDOF++) {
+            dum = (*ZRoeShu)(IDOF,ISHPOIN,ISH);
+            (*ZRoeShu)(IDOF,ISHPOIN,ISH) = (*ZRoeShd)(IDOF,ISHPOIN,ISH);
+            (*ZRoeShd)(IDOF,ISHPOIN,ISH) = dum;
+          }
+        }
+
+        logfile("Upstream:: ");
+        for(unsigned IDOF=0;IDOF<(*ndof);IDOF++) {
+          logfile((*ZRoeShu)(IDOF,ISHPOIN,ISH), " ");
+          // make a backup of the zroesh
+          (*ZRoeShuOld)(IDOF,ISHPOIN,ISH) = (*ZRoeShu)(IDOF,ISHPOIN,ISH);
+        }
+
+        logfile("\nDownstream:: ");
+        for(unsigned IDOF=0;IDOF<(*ndof);IDOF++) {
+          // make a backup of the zroesh
+          logfile((*ZRoeShd)(IDOF,ISHPOIN,ISH), " ");
+          (*ZRoeShdOld)(IDOF,ISHPOIN,ISH) = (*ZRoeShd)(IDOF,ISHPOIN,ISH);
+        }
+        logfile("\n");
+      }
+    }
+  }
+
+  //--------------------------------------------------------------------------//
+
+  void ComputeShockPointsState3D::setSize()
+  {
+    XYZShu.resize(PhysicsInfo::getnbDim(),
+    PhysicsInfo::getnbShPointsMax(),
+    (*nShocks));
+    XYZShd.resize(PhysicsInfo::getnbDim(),
+    PhysicsInfo::getnbShPointsMax(),
+    (*nShocks));
+    ZRoeShuOld->resize(PhysicsInfo::getnbDofMax(),
+    PhysicsInfo::getnbShPointsMax(),
+    PhysicsInfo::getnbShMax());
+    ZRoeShdOld->resize((*ndof),
+    PhysicsInfo::getnbShPointsMax(),
+    PhysicsInfo::getnbShMax());
+  }
+
+  //--------------------------------------------------------------------------//
+
+  void ComputeShockPointsState3D::setAddress()
+  {
+    unsigned totsize = npoin->at(0) + 2 * PhysicsInfo::getnbShMax() *
+    PhysicsInfo::getnbShPointsMax();
+    XYZ = new Array2D<double> (PhysicsInfo::getnbDim(),
+    totsize,
+    &coorVect->at(0));
+    zroe = new Array2D<double> (PhysicsInfo::getnbDofMax(),
+    totsize,
+    &zroeVect->at(0));
+    celnod = new Array2D<int> ((*nvt),nelem->at(0),
+    &celnodVect->at(0));
+
+    unsigned start = npoin->at(0)*PhysicsInfo::getnbDofMax();
+    ZRoeShu =
+    new Array3D <double> (PhysicsInfo::getnbDofMax(),
+    PhysicsInfo::getnbShPointsMax(),
+    PhysicsInfo::getnbShMax(),
+    &zroeVect->at(start));
+    start = npoin->at(0) * PhysicsInfo::getnbDofMax() +
+    PhysicsInfo::getnbShPointsMax() *
+    PhysicsInfo::getnbShMax() *
+    PhysicsInfo::getnbDofMax();
+    ZRoeShd =
+    new Array3D <double> (PhysicsInfo::getnbDofMax(),
+    PhysicsInfo::getnbShPointsMax(),
+    PhysicsInfo::getnbShMax(),
+    &zroeVect->at(start));
+  }
+
+  //--------------------------------------------------------------------------//
+
+  void ComputeShockPointsState3D::freeArray()
+  {
+    delete XYZ; delete zroe; delete celnod;
+    delete ZRoeShu; delete ZRoeShd;
+  }
+
+  //--------------------------------------------------------------------------//
+
+  void ComputeShockPointsState3D::setMeshData()
+  {
+    nvt = MeshData::getInstance().getData<unsigned>("NVT");
+    nelem = MeshData::getInstance().getData <vector<unsigned> > ("NELEM");
+    npoin = MeshData::getInstance().getData <vector<unsigned> > ("NPOIN");
+    zroeVect = MeshData::getInstance().getData <vector<double> >("ZROE");
+    coorVect = MeshData::getInstance().getData <vector<double> >("COOR");
+    celnodVect = MeshData::getInstance().getData <vector<int> >("CELNOD");
+  }
+
+  //--------------------------------------------------------------------------//
+
+  void ComputeShockPointsState3D::setPhysicsData()
+  {
+    nsp = PhysicsData::getInstance().getData <unsigned> ("NSP");
+    ndof = PhysicsData::getInstance().getData <unsigned> ("NDOF");
+    nShocks = PhysicsData::getInstance().getData <unsigned> ("nShocks");
+    nShockPoints =
+    PhysicsData::getInstance().getData <vector <unsigned> > ("nShockPoints");
+    nShockEdges =
+    PhysicsData::getInstance().getData <vector <unsigned> > ("nShockEdges");		// decidere che fare con questo
+    XYZSh = PhysicsData::getInstance().getData <Array3D <double> > ("XYZSH");
+    ZRoeShuOld =
+    PhysicsData::getInstance().getData <Array3D <double> > ("ZROESHuOLD");
+    ZRoeShdOld =
+    PhysicsData::getInstance().getData <Array3D <double> > ("ZROESHdOLD");
+  }
+
+  //--------------------------------------------------------------------------//
+
+} // namespace ShockFitting

@@ -1,0 +1,130 @@
+// Copyright (C) 2014 von Karman Institute for Fluid Dynamics, Belgium
+//
+// This software is distributed under the terms of the
+// GNU Lesser General Public License version 3 (LGPLv3).
+// See doc/lgpl.txt and doc/gpl.txt for the license text.
+
+#include "CopyMakerSF/CopyRoeValues1.hh"
+#include "Framework/Log.hh"
+#include "Framework/MeshData.hh"
+#include "Framework/PhysicsData.hh"
+#include "Framework/PhysicsInfo.hh"
+#include "SConfig/ObjectProvider.hh"
+
+//--------------------------------------------------------------------------//
+
+using namespace std;
+using namespace SConfig;
+
+//--------------------------------------------------------------------------//
+
+namespace ShockFitting {
+
+//--------------------------------------------------------------------------//
+
+// this variable instantiation activates the self-registration mechanism
+ObjectProvider<CopyRoeValues1, CopyMaker>
+  copyRoeValuesProv("CopyRoeValues1");
+
+//--------------------------------------------------------------------------//
+
+CopyRoeValues1::CopyRoeValues1(const std::string& objectName) :
+  CopyMaker(objectName)
+{
+}
+
+//--------------------------------------------------------------------------//
+
+CopyRoeValues1::~CopyRoeValues1()
+{
+}
+
+//--------------------------------------------------------------------------//
+
+void CopyRoeValues1::setup()
+{
+  LogToScreen(VERBOSE, "CopyRoeValues1::setup() => start\n");
+
+  LogToScreen(VERBOSE, "CopyRoeValues1::setup() => end\n");
+}
+
+//--------------------------------------------------------------------------//
+
+void CopyRoeValues1::unsetup()
+{
+  LogToScreen(VERBOSE, "CopyRoeValues1::unsetup()\n");
+}
+
+//--------------------------------------------------------------------------//
+
+void CopyRoeValues1::copy()
+{
+  LogToScreen(INFO, "CopyRoeValues1::copy()\n");
+
+  setMeshData();
+  setPhysicsData();
+
+  setAddress();
+  for(unsigned IPOIN=0; IPOIN<npoin->at(1); IPOIN++) {
+   for(unsigned IA=0; IA<(*ndof); IA++) {
+    // M12M0 has filled with indeces that start from 1
+    // M12M0(1:2*NSHMAX*NPSHMAX)
+    (*zroe0)(IA,M12M0->at(IPOIN+1)-1) = (*zroe1)(IA,IPOIN);
+    if ((*zroe1)(IA,IPOIN)!= (*zroe1)(IA,IPOIN)){ std::cout << "here" << '\n';}
+   }
+  }
+
+  // de-allocate the dynamic arrays
+  freeArray();
+}
+
+//--------------------------------------------------------------------------//
+
+void CopyRoeValues1::setAddress()
+{
+  zroe0 = new Array2D<double>(PhysicsInfo::getnbDofMax(),
+                              (npoin->at(0)+ 2 *
+                              PhysicsInfo::getnbShMax() *
+                              nShockPoints->at(0)),
+//                              nShockPoints->at(0)),
+                              &zroeVect->at(0));
+  start = PhysicsInfo::getnbDofMax() *
+          (npoin->at(0) + 2 * PhysicsInfo::getnbShMax() *
+                        nShockPoints->at(0));
+  zroe1 = new Array2D<double>(PhysicsInfo::getnbDofMax(),
+                              (npoin->at(1)+ 2 *
+                              PhysicsInfo::getnbShMax() *
+                              nShockPoints->at(0)),
+//                              nShockPoints->at(0)),
+                              &zroeVect->at(start));
+}
+
+//--------------------------------------------------------------------------//
+
+void CopyRoeValues1::freeArray()
+{
+  delete zroe1; delete zroe0;
+}
+
+//--------------------------------------------------------------------------//
+
+void CopyRoeValues1::setMeshData()
+{
+  npoin = MeshData::getInstance().getData <vector<unsigned> > ("NPOIN");
+  zroeVect = MeshData::getInstance().getData <vector<double> >("ZROE");
+  M12M0 = MeshData::getInstance().getData <vector <int> > ("M12M0");
+}
+
+//--------------------------------------------------------------------------//
+
+void CopyRoeValues1::setPhysicsData()
+{
+  ndof = PhysicsData::getInstance().getData <unsigned> ("NDOF");
+  nShockPoints =
+   PhysicsData::getInstance().getData <vector <unsigned> > ("nShockPoints");
+
+}
+
+//--------------------------------------------------------------------------//
+
+} // namespace ShockFitting

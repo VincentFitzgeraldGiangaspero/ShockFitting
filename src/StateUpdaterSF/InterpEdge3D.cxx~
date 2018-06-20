@@ -1,0 +1,376 @@
+// Copyright (C) 2014 von Karman Institute for Fluid Dynamics, Belgium
+//
+// This software is distributed under the terms of the
+// GNU Lesser General Public License version 3 (LGPLv3).
+// See doc/lgpl.txt and doc/gpl.txt for the license text.
+
+#include "StateUpdaterSF/InterpEdge3D.hh"
+#include "Framework/Log.hh"
+#include "Framework/MeshData.hh"
+#include "Framework/PhysicsData.hh"
+#include "Framework/PhysicsInfo.hh"
+#include "MathTools/Area.hh"
+#include "MathTools/Jcycl.hh"
+#include "MathTools/MinMax.hh"
+#include "MathTools/DotProd.hh"
+#include "MathTools/CrossProd.hh"
+
+
+//--------------------------------------------------------------------------//
+
+using namespace std;
+
+//--------------------------------------------------------------------------//
+
+namespace ShockFitting {
+
+
+//--------------------------------------------------------------------------//
+
+InterpEdge3D::InterpEdge3D()
+{
+}
+
+//--------------------------------------------------------------------------//
+
+InterpEdge3D::~InterpEdge3D()
+{
+}
+
+
+
+//--------------------------------------------------------------------------//
+
+void InterpEdge3D::updateEdge()
+{
+  LogToScreen(INFO,"InterpEdge3D::updateEdge()\n");
+
+  setMeshData();
+  setPhysicsData();
+
+  setAddress();
+
+
+  interpEdge();
+
+  // de-allocate dynamic arrays
+  freeArray();
+
+
+  }
+
+//--------------------------------------------------------------------------//
+
+void InterpEdge3D::interpEdge()
+{
+
+
+  int kk1,kk2;
+  unsigned verta,vertb,vertc;
+  bool flag_vert;
+  double dist, dist_ref;
+  
+
+  double distpan,norm;
+  unsigned int iface;
+  //resize vectos
+
+  a.resize(3);
+  b.resize(3);
+  c.resize(3);
+  d.resize(3);
+  n.resize(3);
+  a_b.resize(3);
+  a_c.resize(3);
+  d_a.resize(3);
+  std::vector <double> d2(3);
+
+
+  CrossProd <double> Cross;
+  DotProd <double> Dot;
+
+  vertfaceinterp.resize(3,nShockPoints->at(0));
+
+  unsigned ISH=0;
+
+  kk1=0;
+  kk2=0;
+
+
+  for (unsigned IV=0; IV<nShockPoints->at(0); IV++){
+    if ((*ShEdgePoints)(0,IV,ISH)==1){
+
+      kk1++;
+      kk2=0;
+      for (unsigned IFACE=0; IFACE<nShockFaces->at(0); IFACE++){
+      
+
+        // first vertex
+        verta=(*ShFaces)(0,IFACE,0);
+        if(verta==IV){
+          vertb=(*ShFaces)(1,IFACE,0);
+          vertc=(*ShFaces)(2,IFACE,0);
+          if(((*ShEdgePoints)(0,vertb,ISH)==0)&&((*ShEdgePoints)(0,vertc,ISH)==0)){
+           kk2++;
+           vertfaceinterp(0,IV)=vertb;
+           vertfaceinterp(1,IV)=vertc;
+           }
+        }
+
+
+
+        // second vertex
+        verta=(*ShFaces)(1,IFACE,0);
+        if(verta==IV){
+          vertb=(*ShFaces)(0,IFACE,0);
+          vertc=(*ShFaces)(2,IFACE,0);
+          if(((*ShEdgePoints)(0,vertb,0)==0)&&((*ShEdgePoints)(0,vertc,0)==0)){
+            kk2++;
+            vertfaceinterp(0,IV)=vertb;
+            vertfaceinterp(1,IV)=vertc;
+          }
+        }
+
+
+        // third vertex
+        verta=(*ShFaces)(2,IFACE,0);
+        if(verta==IV){
+          vertb=(*ShFaces)(0,IFACE,0);
+          vertc=(*ShFaces)(1,IFACE,0);
+          if(((*ShEdgePoints)(0,vertb,ISH)==0)&&((*ShEdgePoints)(0,vertc,ISH)==0)){
+            kk2++;
+            vertfaceinterp(0,IV)=vertb;
+            vertfaceinterp(1,IV)=vertc;
+          }
+        }
+
+      }// iface
+    }//if
+  } // npoinshock
+  
+    
+
+  for (unsigned IV=0; IV<nShockPoints->at(0); IV++){
+    if((*ShEdgePoints)(0,IV,0)==1){
+    
+      vertb=vertfaceinterp(0,IV);
+      vertc=vertfaceinterp(1,IV);
+      
+      for (unsigned IFACE=0; IFACE<nShockFaces->at(0); IFACE++){
+      
+        if( (((*ShFaces)(0,IFACE,0)==vertb)||((*ShFaces)(1,IFACE,0)==vertb)||((*ShFaces)(2,IFACE,0)==vertb)) && 
+    (((*ShFaces)(0,IFACE,0)==vertc)||((*ShFaces)(1,IFACE,0)==vertc)||((*ShFaces)(2,IFACE,0)==vertc)) ){
+          flag_vert=true;
+          
+          for (unsigned kvert=0; kvert<3; kvert++){
+          
+            verta=(*ShFaces)(kvert,IFACE,0);
+            
+            if ((flag_vert)&&(IV==verta)){
+              flag_vert=false;
+            }
+          }
+          
+          if(flag_vert){
+            vertfaceinterp(2,IV)=IFACE;
+          }
+        }
+      }
+    }
+  } // npoinshock 2
+
+  
+
+  kk1=0;
+
+  
+
+  for (unsigned IV=0; IV<nShockPoints->at(0); IV++){
+
+
+    if (((*ShEdgePoints)(0,IV,0)==1)&&(vertfaceinterp(0,IV)==0)){
+    
+
+      kk1++;
+      dist=10.00;
+      for (unsigned I=0; I<3; I++){
+        a[I]=(*XYZSh)(I,IV,0);
+      }
+
+      for (unsigned KV=0; KV<nShockPoints->at(0); KV++){
+        if ((*ShEdgePoints)(0,KV,0)==0){
+          for (unsigned I=0; I<3; I++){
+            b[I]=(*XYZSh)(I,KV,0);
+          }
+
+          for (unsigned I=0; I<3; I++){
+            a_b[I]=a[I]-b[I];
+          }
+
+          Dot.computeDotProd(a_b,a_b);
+          dist_ref=Dot.getDotProd();
+
+          if (dist_ref<dist){
+            vertfaceinterp(0,IV)=KV;
+            vertfaceinterp(1,IV)=KV;
+            vertfaceinterp(2,IV)=0;
+            dist=dist_ref;
+          }
+
+        }
+      }
+    }
+  } //nshockpoints 3
+
+
+
+  std::cout << " interpedge()--END \n";
+
+
+  std::cout << " edgeFix() \n";
+
+  
+
+  
+
+  for (unsigned IV=0; IV<nShockPoints->at(0); IV++){
+    if (((*ShEdgePoints)(0,IV,ISH)==1)&&(vertfaceinterp(2,IV)!=0)){
+
+
+      iface=vertfaceinterp(2,IV);
+
+      for(unsigned I=0; I<3; I++){
+        a[I]=(*XYZSh)(I,(*ShFaces)(0,iface,0),0);
+        b[I]=(*XYZSh)(I,(*ShFaces)(1,iface,0),0);
+        c[I]=(*XYZSh)(I,(*ShFaces)(2,iface,0),0);
+       
+      }
+
+      for(unsigned I=0; I<3; I++){
+        a_b[I]=a[I]-b[I];
+        a_c[I]=a[I]-c[I];
+      }
+
+ 	
+      Cross.computeCrossProd(a_b,a_c);
+      d = Cross.getCrossProd();
+
+      Dot.computeDotProd(d,d);
+      norm=sqrt(Dot.getDotProd());
+
+
+
+      for (unsigned int I=0; I<3;I++){
+        n[I]=d[I]/norm;
+      }
+
+      for (unsigned int I=0; I<3;I++){
+        d2[I]=(*XYZSh)(I,IV,0);
+        d_a[I]=d2[I]-a[I];
+      }
+
+      Dot.computeDotProd(n,d_a);
+      distpan=Dot.getDotProd();
+
+      for (unsigned int I=0; I<3; I++){
+        (*XYZSh)(I,IV,0)=d2[I]-distpan*n[I];
+      }
+     
+    }
+  }
+
+
+
+  std::cout << " edgeFix() --END -- \n";
+  
+}
+
+//--------------------------------------------------------------------------//
+
+void InterpEdge3D::setAddress()
+{
+
+
+  unsigned start;
+  start = 0;
+
+  start = PhysicsInfo::getnbDim() *
+          (npoin->at(0) + 2 *
+           PhysicsInfo::getnbShMax() * PhysicsInfo::getnbShPointsMax());
+  XYZ = new Array2D <double> (PhysicsInfo::getnbDim(),
+                             (npoin->at(1) + 2 *
+                              PhysicsInfo::getnbShMax() *
+                              PhysicsInfo::getnbShPointsMax()),
+                             &coorVect->at(start));
+  start = PhysicsInfo::getnbDofMax() *
+          (npoin->at(0) + 2 *
+           PhysicsInfo::getnbShMax() * PhysicsInfo::getnbShPointsMax());
+  zroe = new Array2D <double>(PhysicsInfo::getnbDofMax(),
+                              (npoin->at(1) + 2 *
+                              PhysicsInfo::getnbShMax() *
+                              PhysicsInfo::getnbShPointsMax()),
+                              &zroeVect->at(start));
+  start = (*nvt) * nelem->at(0);
+  celnod = new Array2D<int> ((*nvt), nelem->at(1), &celnodVect->at(start));
+  // XYShu and XYShd have the starting pointers referred to shocked mesh
+  start = npoin->at(0) * PhysicsInfo::getnbDim() +
+          PhysicsInfo::getnbDim() *
+          (npoin->at(0) + 2 *
+           PhysicsInfo::getnbShMax() * PhysicsInfo::getnbShPointsMax());
+   // M02M1 is filled with the indeces that start from 1
+  // M02M1(1:NPOIN(0)+2*NSHMAX*NPSHMAX)
+  // M02M1 is filled wth the indeces that start from 0
+  // M02M12(0:2*NSHMAX*NPSHMAX-1)
+  M02M12 = new vector<int>(2 * PhysicsInfo::getnbShMax() *
+                               PhysicsInfo::getnbShPointsMax());
+
+  for(unsigned i=0; i<M02M12->size(); i++) {
+   M02M12->at(i) = M02M1->at(i+npoin->at(0)+1);
+  }
+}
+
+//--------------------------------------------------------------------------//
+
+void InterpEdge3D::freeArray()
+{
+  delete zroe; delete XYZ;
+  delete celnod;
+  delete M02M12;
+}
+
+//--------------------------------------------------------------------------//
+
+void InterpEdge3D::setMeshData()
+{
+  nvt = MeshData::getInstance().getData <unsigned> ("NVT");
+  npoin = MeshData::getInstance().getData <vector<unsigned> > ("NPOIN");
+  nelem = MeshData::getInstance().getData <vector<unsigned> > ("NELEM");
+  zroeVect = MeshData::getInstance().getData <vector<double> > ("ZROE");
+  coorVect = MeshData::getInstance().getData <vector<double> > ("COOR");
+  celnodVect =
+    MeshData::getInstance().getData <vector<int> > ("CELNOD");
+  nodcod =
+    MeshData::getInstance().getData <vector<int> > ("NODCOD");
+  M02M1 = MeshData::getInstance().getData <vector<int> > ("M02M1");
+}
+
+//--------------------------------------------------------------------------//
+
+void InterpEdge3D::setPhysicsData()
+{
+  ndof = PhysicsData::getInstance().getData <unsigned> ("NDOF");
+  nShocks = PhysicsData::getInstance().getData <unsigned> ("nShocks");
+  nShockPoints =
+   PhysicsData::getInstance().getData <vector<unsigned> > ("nShockPoints");
+  XYZSh =
+   PhysicsData::getInstance().getData <Array3D<double> > ("XYZSH");
+  nShockFaces =
+   PhysicsData::getInstance().getData <vector <unsigned> > ("nShockFaces");
+  ShFaces = PhysicsData::getInstance().getData <Array3D <unsigned> > ("ShFaces");
+  ShEdgePoints = PhysicsData::getInstance().getData <Array3D <unsigned> > ("ShEDGEPoints");
+
+}
+
+//--------------------------------------------------------------------------//
+
+} // namespace ShockFitting

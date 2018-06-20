@@ -1,0 +1,787 @@
+// Copyright (C) 2014 von Karman Institute for Fluid Dynamics, Belgium
+//
+// This software is distributed under the terms of the
+// GNU Lesser General Public License version 3 (LGPLv3).
+// See doc/lgpl.txt and doc/gpl.txt for the license text.
+
+#include <fstream>
+#include "RemeshingSF/CoNorm4Pg3D.hh"
+#include "RemeshingSF/ShpDpndnc.hh"
+#include "Framework/Log.hh"
+#include "Framework/MeshData.hh"
+#include "Framework/PhysicsData.hh"
+#include "Framework/PhysicsInfo.hh"
+#include "Framework/ReferenceInfo.hh"
+#include "SConfig/ObjectProvider.hh"
+
+#include "MathTools/Array2D.hh"
+#include "MathTools/Jcycl.hh"
+#include "MathTools/CrossProd.hh"
+#include "MathTools/DotProd.hh"
+
+
+
+
+
+
+#include <CGAL/Kernel_traits.h>
+#include <CGAL/Origin.h>
+#include <CGAL/Exact_predicates_inexact_constructions_kernel.h>
+#include <CGAL/pca_estimate_normals.h>
+#include <CGAL/mst_orient_normals.h>
+#include <CGAL/property_map.h>
+#include <CGAL/IO/read_xyz_points.h>
+#include <CGAL/IO/write_xyz_points.h>
+#include <utility> // defines std::pair
+#include <list>
+#include <fstream>
+#include <iostream>
+#include <vector>
+
+//--------------------------------------------------------------------------//
+
+// Types
+typedef CGAL::Exact_predicates_inexact_constructions_kernel Kernel;
+typedef Kernel::Point_3 Point;
+typedef Kernel::Vector_3 Vector;
+// Point with normal vector stored in a std::pair.
+typedef std::pair<Point, Vector> PointVectorPair;
+// Concurrency
+#ifdef CGAL_LINKED_WITH_TBB
+typedef CGAL::Parallel_tag Concurrency_tag;
+#else
+typedef CGAL::Sequential_tag Concurrency_tag;
+#endif
+//----------------------------------------------------------------------------//
+
+using namespace std;
+using namespace SConfig;
+
+//---------------------------------------------------------------------------//
+
+namespace ShockFitting {
+
+//---------------------------------------------------------------------------//
+
+// this variable instantiation activates the self-registration mechanism
+ObjectProvider<CoNorm4Pg3D, Remeshing> computeNormalVector4Pg3DProv("CoNorm4Pg3D");
+
+//--------------------------------------------------------------------------//
+
+CoNorm4Pg3D::CoNorm4Pg3D(const std::string& objectName) :
+  Remeshing(objectName)
+{
+}
+
+//----------------------------------------------------------------------------//
+
+CoNorm4Pg3D::~CoNorm4Pg3D()
+{
+}
+
+//----------------------------------------------------------------------------//
+
+void CoNorm4Pg3D::setup()
+{
+  LogToScreen(VERBOSE,"CoNorm4Pg3D::setup() => start\n");
+
+  LogToScreen(VERBOSE,"CoNorm4Pg3D::setup() => end\n");
+}
+
+
+//----------------------------------------------------------------------------//
+
+void CoNorm4Pg3D::unsetup()
+{
+  LogToScreen(VERBOSE,"CoNorm4Pg3D::unsetup()\n");
+}
+
+//----------------------------------------------------------------------------//
+
+void CoNorm4Pg3D::remesh()
+{
+  LogToScreen(INFO,"CoNorm4Pg3D::remesh()\n");
+
+  logfile.Open(getClassName());
+
+  setMeshData();
+  setPhysicsData();
+  setAddress();
+  setSize();
+
+  // write status on log file
+  for (unsigned ISH=0; ISH<(*nShocks); ISH++) {
+   for (unsigned I=0; I<nShockPoints->at(ISH); I++) {
+    unsigned m_I = I+1;
+    logfile(m_I," ",(*ZRoeShd)(0,I,ISH), " " ,(*ZRoeShd)(1,I,ISH),"\n");
+    logfile(m_I," ",(*ZRoeShd)(2,I,ISH), " " ,(*ZRoeShd)(3,I,ISH),"\n");
+    logfile(m_I," ",(*ZRoeShd)(4,I,ISH),"\n");
+   }
+  }
+
+  // normals evaluation: CGAL or Dependancy domains
+  //compute3Dnormals_dependency();
+  compute3Dnormals();
+
+
+  //compute normal vector for each shock
+  for (unsigned ISH=0; ISH<(*nShocks); ISH++) {
+   for (unsigned I=0; I<nShockPoints->at(ISH); I++) {
+     // assign normal vector
+     (*vShNor)(0,I,ISH) = shock_normals(0,I,ISH);
+     (*vShNor)(1,I,ISH) = shock_normals(1,I,ISH);
+     (*vShNor)(2,I,ISH) = shock_normals(2,I,ISH);
+   }
+  }
+
+  
+  // compute normal vectors for typeSh="S"
+  // setVShNorForStype();
+
+  // fix normal vectors for special points
+  // it forces the direction of the contact discontinuity normal vector
+  // in order to define an angle equal to 90° with mach stem
+  // normal vector
+  // for (unsigned ISPPNTS=0; ISPPNTS<(*nSpecPoints); ISPPNTS++) {
+  //
+  //  // special point: wall point without reflection
+  //  if (typeSpecPoints->at(ISPPNTS)=="WPNRX") {setVShNorForWPNRX(ISPPNTS);}
+  //
+  //  // special point: connection between two shocks
+  //  else if (typeSpecPoints->at(ISPPNTS)=="C") {setVShNorForC(ISPPNTS);}
+  //
+  //  // special point: triple point
+  //  else if (typeSpecPoints->at(ISPPNTS)=="TP") {setVShNorForTP(ISPPNTS);}
+  //
+   // write the computed normal vectors on tecplot file
+  //  writeTecPlotFile();
+  // }
+
+
+  //  write the computed normal vectors on tecplot file
+   writeTecPlotFile();
+
+
+  // de-allocate ZRoeShd
+  freeArray();
+
+  logfile.Close();
+}
+
+//----------------------------------------------------------------------------//
+
+void CoNorm4Pg3D::compute3Dnormals_dependency(){
+
+  cout << "-compute3Dnormals()  =>  Dependency \n";
+
+
+  std::vector<double> vertex_a(3);
+  std::vector<double> vertex_b(3);
+  std::vector<double> vertex_c(3);
+  std::vector<double> ab(3);
+  std::vector<double> ac(3);
+  std::vector<double> d(3); // cross_product
+  std::vector<double> n(3); // norm of barycenter
+  std::vector<double> norm(3); // norm of barycenter
+  std::vector<double> bprime(3),cprime(3),u_b(3),u_c(3),diff1(3),diff2(3);
+  std::vector<double> c_vert(3);
+
+  bool flag1,flag2;
+  double len1,len2;
+  double deltatest=1.e-6;
+
+  std::vector<std::vector<double> > normcnt(3,std::vector <double> (nShockPoints->at(0)));
+  std::vector<std::vector<double> > normshock(3,std::vector <double> (nShockPoints->at(0)));
+
+  Jcycl Cycle;
+  CrossProd <double> Cross;
+  DotProd <double> Dot;
+  double areaABC, areat;
+  areat=0.0;
+  areaABC=0.0;
+  unsigned int verta,vertb,vertc;
+  double cb,cc;
+
+
+  shock_normals.resize(PhysicsInfo::getnbDim(),
+  nShockPoints->at(0),
+  PhysicsInfo::getnbShMax());
+
+  for (unsigned ISH=0; ISH<(*nShocks); ISH++) {
+   for (unsigned IFACE=0; IFACE<nShockFaces->at(ISH); IFACE++) {
+
+      verta=(*ShFaces)(0,IFACE,ISH);
+      vertb=(*ShFaces)(1,IFACE,ISH);
+      vertc=(*ShFaces)(2,IFACE,ISH);
+
+       //vertexes coordinates
+      for (unsigned IV=0; IV<3; IV++){
+        vertex_a[IV]=(*XYZSh)(IV,verta,ISH);
+        vertex_b[IV]=(*XYZSh)(IV,vertb,ISH);
+        vertex_c[IV]=(*XYZSh)(IV,vertc,ISH);
+      } // fill vertex
+
+      for (unsigned IV=0; IV<3; IV++){
+        ab[IV]=vertex_b[IV]-vertex_a[IV];
+        ac[IV]=vertex_c[IV]-vertex_a[IV];
+      }
+
+      Cross.computeCrossProd(ab,ac);
+      d=Cross.getCrossProd();
+
+      Dot.computeDotProd(d,d);
+      areaABC=sqrt(Dot.getDotProd());
+
+   
+      for (unsigned int I=0; I<3;I++){
+        norm[I]=d[I]*1.0/areaABC;
+
+      }
+
+      areaABC=0.5*areaABC;
+
+      // orientation to be fixed !!!
+      //for (unsigned int I=0; I<3;I++){ // now is done manually
+      //  norm[I]=-norm[I];
+      //}
+
+      // verta
+      c_vert[0]=sqrt(PhysicsInfo::getGam()*ReferenceInfo::getRgas()*(*ZRoeShd)(4,verta,ISH));
+      // vertb
+      c_vert[1]=sqrt(PhysicsInfo::getGam()*ReferenceInfo::getRgas()*(*ZRoeShd)(4,vertb,ISH));
+      //vertc
+      c_vert[2]=sqrt(PhysicsInfo::getGam()*ReferenceInfo::getRgas()*(*ZRoeShd)(4,vertc,ISH));
+
+      for(unsigned IV=0; IV<3; IV++){
+        flag1=false;
+        flag2=false;
+
+        vertb=Cycle.callJcycl(IV+2)-1;
+        vertc=Cycle.callJcycl(IV+3)-1;
+
+        verta=(*ShFaces)(IV,IFACE,ISH);
+        vertb=(*ShFaces)(vertb,IFACE,ISH);
+        vertc=(*ShFaces)(vertc,IFACE,ISH);
+
+        for (unsigned I=0; I<3; I++){
+          u_b[I]=(*ZRoeShd)(I+1,vertb,ISH);
+          u_c[I]=(*ZRoeShd)(I+1,vertc,ISH);
+        }
+
+        cb=c_vert[vertb];
+        cc=c_vert[vertc];
+
+        //vertexes coordinates
+        for (unsigned I=0; I<3; I++){
+          vertex_a[I]=(*XYZSh)(I,verta,ISH);
+          vertex_b[I]=(*XYZSh)(I,vertb,ISH);
+          vertex_c[I]=(*XYZSh)(I,vertc,ISH);
+        } // fill vertex
+
+
+        for(unsigned I=0; I<3; I++){
+          bprime[I]=vertex_b[I]+u_b[I]*deltatest;
+          cprime[I]=vertex_c[I]+u_c[I]*deltatest;
+        }
+
+
+        for(unsigned I=0; I<3; I++){
+          diff1[I]=vertex_b[I]-vertex_a[I];
+          diff2[I]=bprime[I]-vertex_a[I];
+        }
+
+        Dot.computeDotProd(diff1,diff1);
+        len1=abs(Dot.getDotProd());
+
+        Dot.computeDotProd(diff2,diff2);
+        len2=abs(Dot.getDotProd());
+
+        len2=len2-cb*deltatest;
+
+        if(len2<len1){ flag1=true;}
+
+        for(unsigned I=0; I<3; I++){
+          diff1[I]=vertex_c[I]-vertex_a[I];
+          diff2[I]=cprime[I]-vertex_a[I];
+        }
+
+        Dot.computeDotProd(diff1,diff1);
+        len1=abs(Dot.getDotProd());
+
+        Dot.computeDotProd(diff2,diff2);
+        len2=abs(Dot.getDotProd());
+
+        len2=len2-cc*deltatest;
+
+        if(len2<len1){ flag2=true;}
+
+        for(unsigned I=0; I<3; I++){
+          normcnt[I][verta]=normcnt[I][verta]+norm[I]*areaABC;
+        }
+
+        if(flag1 && flag2){areat=areaABC;}
+
+        for(unsigned I=0; I<3; I++){
+          normshock[I][verta]=normshock[I][verta]+norm[I]*areat;
+        }
+      }// for IV
+    } // ISHPOINT   
+  }// for ISH
+
+
+  // normalization
+  for (unsigned IPOIN=0; IPOIN < nShockPoints->at(0); IPOIN++) {
+    for (unsigned I=0; I<3; I++){
+      n[I]=normshock[I][IPOIN];
+    }
+    
+    Dot.computeDotProd(n,n);
+    areaABC=sqrt(Dot.getDotProd());
+    
+    if(areaABC<1e-10) {
+      std::cout << " problem in vertex " << IPOIN << " \n";
+      for (unsigned I=0; I<3; I++){
+        n[I]=normcnt[I][IPOIN];
+      }
+      Dot.computeDotProd(n,n);
+      areaABC=sqrt(Dot.getDotProd());
+      if(areaABC<1e-10){std::cout << " problem in AREA \n"; }
+    }
+
+    for (unsigned IV=0; IV<3; IV++){
+      normshock[IV][IPOIN]=n[IV]*1.0/areaABC;
+      shock_normals(IV,IPOIN,0)=normshock[IV][IPOIN];
+    }
+
+  }        
+}
+
+//----------------------------------------------------------------------------//
+
+void CoNorm4Pg3D::compute3Dnormals(){
+
+  cout << "-compute3Dnormals()  =>  CGAL \n";
+
+  std::vector<Vector> shock_normals_vect;
+  typedef std::vector<PointVectorPair> PointVect;
+  PointVect points; // Type of input point set
+
+  shock_normals.resize(PhysicsInfo::getnbDim(),
+  nShockPoints->at(0),
+  PhysicsInfo::getnbShMax());
+
+
+  unsigned ISH=0;
+
+  for(unsigned ISHPOIN=0;ISHPOIN<nShockPoints->at(ISH);ISHPOIN++) {
+    points.push_back(PointVectorPair(Point((*XYZSh)(0,ISHPOIN,ISH),(*XYZSh)(1,ISHPOIN,ISH),
+    (*XYZSh)(2,ISHPOIN,ISH)), Vector()));
+  }
+
+  // Estimates normals direction.
+  // Note: pca_estimate_normals() requires an iterator over points
+  // as well as property maps to access each point's position and normal.
+  const int nb_neighbors = 10; // K-nearest neighbors = 3 rings
+  CGAL::pca_estimate_normals<Concurrency_tag>(points.begin(), points.end(),
+  CGAL::First_of_pair_property_map<PointVectorPair>(),
+  CGAL::Second_of_pair_property_map<PointVectorPair>(),
+  nb_neighbors);
+  // Orients normals.
+  // Note: mst_orient_normals() requires an iterator over points
+  // as well as property maps to access each point's position and normal.
+  std::vector<PointVectorPair>::iterator unoriented_points_begin =
+  CGAL::mst_orient_normals(points.begin(), points.end(),
+  CGAL::First_of_pair_property_map<PointVectorPair>(),
+  CGAL::Second_of_pair_property_map<PointVectorPair>(),
+  nb_neighbors);
+  // Optional: delete points with an unoriented normal
+  // if you plan to call a reconstruction algorithm that expects oriented normals.
+  points.erase(unoriented_points_begin, points.end());
+
+
+  for ( std::vector<PointVectorPair>::iterator it = points.begin(); it != points.end(); it++ ){
+    shock_normals_vect.push_back(it->second);
+  }
+
+
+  for(unsigned ISH=0;ISH<(*nShocks);ISH++) {
+    for(unsigned ISHPOIN=0;ISHPOIN<nShockPoints->at(ISH);ISHPOIN++) {
+      shock_normals(0,ISHPOIN,ISH)=shock_normals_vect[ISHPOIN][0];
+      shock_normals(1,ISHPOIN,ISH)=shock_normals_vect[ISHPOIN][1];
+      shock_normals(2,ISHPOIN,ISH)=shock_normals_vect[ISHPOIN][2];
+    }
+  }
+}
+
+//----------------------------------------------------------------------------//
+
+void CoNorm4Pg3D::computeTau(unsigned ISH, unsigned I)
+{
+  unsigned J, J2, ipoin;
+  ush = 0; vsh = 0;
+  xi = (*XYZSh)(0,I,ISH);
+  yi = (*XYZSh)(1,I,ISH);
+
+  if (I < (nShockPoints->at(ISH)-1)) {
+   // one point forward
+   J=I+1;
+   // coordinates of the one point forward
+   onePointForward(J, ISH);
+
+   // recover status for the forward point
+   ipoin = J+1; // c++ indeces start from 0
+   recoverState("forward",J,ISH);
+
+   if (I < (nShockPoints->at(ISH)-1)) {
+    // two points forward
+    J2=I+2;
+    // coordinates of two points forward
+    twoPointsForward(J2,ISH);
+   } // J2
+   else { setTauIp2ToZero();}
+  } // J
+  else { // I = nShockPoints(ISH)-1
+   setTauIp1ToZero();
+   setTauIp2ToZero();
+  }
+
+  // evaluate dependency
+  // if I is the last point it is computed in backward direction
+  if (I!=0 && I!= nShockPoints->at(ISH)-1) {
+   ShpDpndnc shockDepip(xi,yi,ush,vsh,xj,yj,uj,vj,aj);
+   depip1 = shockDepip.getDependence();
+  }
+  else if (I==nShockPoints->at(ISH)) {depip1=0; depim1=1;}
+
+  if (I>0) {
+   // one point backward
+   J=I-1;
+   // coordinates of the one point backward
+   onePointBackward(J,ISH);
+
+   // recover status for the backward point
+   ipoin = J+1; // c++ indeces start from 0
+   recoverState("backward",J,ISH);
+
+   if (I>1) {
+    // two points backward
+    J2=I-2;
+    // coordinates of two points backward
+    twoPointsBackward(J2,ISH);
+   }
+   else {setTauIm2ToZero();}
+  }
+  else { // I=0
+   setTauIm1ToZero();
+   setTauIm2ToZero();
+  }
+
+  // evaluate dependency
+  // if I is the first point it is computed in forward direction
+  if (I!=0 && I!= nShockPoints->at(ISH)-1) {
+   ShpDpndnc shockDepim(xi,yi,ush,vsh,xj,yj,uj,vj,aj);
+   depim1 = shockDepim.getDependence();
+  }
+  else if (I==0) {depip1=1; depim1=0;}
+
+  setLp();
+  setLm();
+
+  if(I==0) {depim1=0; depip1=1; lm12=1;}
+  if(I==nShockPoints->at(ISH)-1) {depim1=1; depip1=0; lp12=1.0;}
+
+  taux = (depim1*tauxim1*lp12+depip1*tauxip1*lm12);
+  tauy = (depim1*tauyim1*lp12+depip1*tauyip1*lm12);
+
+  ipoin = I+1; // c++ indeces start from 0
+  logfile("\n", ipoin, "tau ", taux, "   ", tauy);
+  logfile("           ", depim1, " ", depip1, "\n\n");
+  logfile ("\n            --------------          \n");
+  tau = sqrt(taux*taux+tauy*tauy);
+  taux = taux/tau;
+  tauy = tauy/tau;
+}
+
+//----------------------------------------------------------------------------//
+
+void CoNorm4Pg3D::setVShNorForStype()
+{
+  for(unsigned ISH=0; ISH<(*nShocks); ISH++) {
+    if(typeSh->at(ISH)=="S") {
+      unsigned ii = 0;
+      for (unsigned I=0; I<nShockPoints->at(ISH); I++) {
+        ui = (*ZRoeShd)(2,I,ISH)/(*ZRoeShd)(0,I,ISH);
+        vi = (*ZRoeShd)(3,I,ISH)/(*ZRoeShd)(0,I,ISH);
+        dum = ui*(*vShNor)(0,I,ISH)+vi*(*vShNor)(1,I,ISH);
+        if(dum>0) {ii++;}
+        ////
+      } // for I
+      if (ii < nShockPoints->at(ISH)/2 - 1) { break; }
+      for (unsigned I=0; I<nShockPoints->at(ISH); I++) {
+        (*vShNor)(0,I,ISH) = -(*vShNor)(0,I,ISH);
+        (*vShNor)(1,I,ISH) = -(*vShNor)(1,I,ISH);} // I
+      } // if typeSh->at(ISH)=="S"
+    } // for
+  }
+
+//----------------------------------------------------------------------------//
+
+void CoNorm4Pg3D::setVShNorForWPNRX(unsigned ISPPNTS)
+{
+  setShockIndeces(1,ISPPNTS);
+
+  (*vShNor)(0,IP.at(0),ISH.at(0)) =
+      (*vShNor)(0,IP.at(0),ISH.at(0))/abs((*vShNor)(0,IP.at(0),ISH.at(0)));
+  (*vShNor)(1,IP.at(0),ISH.at(0)) = 0;
+}
+
+//----------------------------------------------------------------------------//
+
+void CoNorm4Pg3D::setVShNorForC(unsigned ISPPNTS)
+{
+  setShockIndeces(2,ISPPNTS);
+
+  nx1 = (*vShNor)(0,IP.at(0),ISH.at(0));
+  ny1 = (*vShNor)(1,IP.at(0),ISH.at(0));
+  nx2 = (*vShNor)(0,IP.at(1),ISH.at(1));
+  ny2 = (*vShNor)(1,IP.at(1),ISH.at(1));
+
+  nx1 = nx1+nx2;
+  ny1 = ny1+ny2;
+
+  dum = sqrt(nx1*nx1+ny1*ny1);
+  nx1 = nx1/dum;
+  ny1 = ny1/dum;
+
+  (*vShNor)(0,IP.at(0),ISH.at(0)) = nx1;
+  (*vShNor)(1,IP.at(0),ISH.at(0)) = ny1;
+  (*vShNor)(0,IP.at(1),ISH.at(0)) = nx1;
+  (*vShNor)(1,IP.at(1),ISH.at(0)) = ny1;
+}
+
+//----------------------------------------------------------------------------//
+
+void CoNorm4Pg3D::setVShNorForTP(unsigned ISPPNTS)
+{
+  // ISH.at(0) incident shock
+  // ISH.at(1) reflected shock
+  // ISH.at(2) Mach stem
+  // ISH.at(3) contact discontinuity
+  setShockIndeces(4,ISPPNTS);
+
+  nx2 = (*vShNor)(0,IP.at(1),ISH.at(1));
+  ny2 = (*vShNor)(1,IP.at(1),ISH.at(1));
+
+  nx4 = (*vShNor)(0,IP.at(3),ISH.at(3));
+  ny4 = (*vShNor)(1,IP.at(3),ISH.at(3));
+
+  dum = nx2*nx4+ny2*ny4;
+  if (dum < 0) {
+   for (unsigned I=0; I<nShockPoints->at(ISH.at(3)); I++) {
+    (*vShNor)(0,I,ISH.at(3)) = -(*vShNor)(0,I,ISH.at(3));
+    (*vShNor)(1,I,ISH.at(3)) = -(*vShNor)(1,I,ISH.at(3));
+   }
+  }
+}
+
+//----------------------------------------------------------------------------//
+
+void CoNorm4Pg3D::writeTecPlotFile()
+{
+  cout << "-Writing shocknor.dat file \n";
+
+  FILE* tecfile;
+  tecfile = fopen("shocknor.dat","w");
+
+  for (unsigned ISH=0; ISH<(*nShocks); ISH++) {
+    fprintf(tecfile,"%s","TITLE = Shock normals\n");
+    fprintf(tecfile,"%s","VARIABLES = X Y Z Z(1) Z(2) Z(3) NX NY NZ\n");
+    fprintf(tecfile,"%s","ZONE T='sampletext', F = FEPOINT, ET = TRIANGLE ");
+    fprintf(tecfile,"%s %5u","N = ",nShockPoints->at(ISH));
+    fprintf(tecfile,"%s %5u %s",", E = ",nShockFaces->at(ISH),"\n");
+    for (unsigned I=0; I<nShockPoints->at(ISH); I++) {
+      for (unsigned K=0; K<PhysicsInfo::getnbDim(); K++)
+      {fprintf(tecfile,"%32.16E %s",(*XYZSh)(K,I,ISH)," ");}
+      fprintf(tecfile,"%s","\n");
+      fprintf(tecfile,"%s","1  1  1");
+      for (unsigned K=0; K<PhysicsInfo::getnbDim(); K++)
+      {fprintf(tecfile,"%32.16E %s",(*vShNor)(K,I,ISH)," ");}
+      fprintf(tecfile,"%s","\n");
+    }
+    for (unsigned I=0; I<nShockFaces->at(ISH); I++) {
+      fprintf(tecfile,"%u %s %u %s %u %s",  (*ShFaces)(0,I,ISH)+1," ",  (*ShFaces)(1,I,ISH)+1," ",  (*ShFaces)(2,I,ISH)+1,"\n");
+    }
+  }
+
+  fclose(tecfile);
+ }
+
+//----------------------------------------------------------------------------//
+
+void CoNorm4Pg3D::recoverState(string direction, unsigned J, unsigned ISH)
+{
+  uj = (*ZRoeShd)(2,J,ISH)/(*ZRoeShd)(0,J,ISH);
+  vj = (*ZRoeShd)(3,J,ISH)/(*ZRoeShd)(0,J,ISH);
+  roj = (*ZRoeShd)(0,J,ISH)*(*ZRoeShd)(0,J,ISH);
+  help = pow((*ZRoeShd)(2,J,ISH),2)+pow((*ZRoeShd)(3,J,ISH),2);
+  pj = PhysicsInfo::getGm1() / PhysicsInfo::getGam() *
+       ((*ZRoeShd)(0,J,ISH)*(*ZRoeShd)(1,J,ISH)-0.5*help);
+  aj = sqrt(PhysicsInfo::getGam()*pj/roj);
+
+  if (typeSh->at(ISH)=="D") { aj = 0;}
+}
+
+//----------------------------------------------------------------------------//
+
+void CoNorm4Pg3D::setShockIndeces(unsigned nbDiscontinuities, unsigned ISPPNTS)
+{
+  ISH.resize(nbDiscontinuities);
+  IP.resize(nbDiscontinuities);
+  for(unsigned i=0; i<nbDiscontinuities; i++) {
+   ISH.at(i) = (*SHinSPPs)(0,i,ISPPNTS)-1; // c++ indeces start from 0
+   I = (*SHinSPPs)(1,i,ISPPNTS) - 1;
+   IP.at(i) = I * (nShockPoints->at(ISH.at(i))-1); // c++ indeces start from 0
+  }
+}
+
+//----------------------------------------------------------------------------//
+
+void CoNorm4Pg3D::setLp()
+{
+  lp12 = pow(tauxip1,2)+pow(tauyip1,2);
+  lp22 = pow(tauxip2,2)+pow(tauyip2,2);
+  lp1 = sqrt(lp12);
+  lp2 = sqrt(lp22);
+}
+
+//----------------------------------------------------------------------------//
+
+void CoNorm4Pg3D::setLm()
+{
+  lm12 = pow(tauxim1,2)+pow(tauyim1,2);
+  lm22 = pow(tauxim2,2)+pow(tauyim2,2);
+  lm1 = sqrt(lm12);
+  lm2 = sqrt(lp22);
+}
+
+//----------------------------------------------------------------------------//
+
+void CoNorm4Pg3D::onePointForward(unsigned J, unsigned ISH)
+{
+  xj = (*XYZSh)(0,J,ISH);
+  yj = (*XYZSh)(1,J,ISH);
+  tauxip1 = xj-xi;
+  tauyip1 = yj-yi;
+}
+
+//----------------------------------------------------------------------------//
+
+void CoNorm4Pg3D::twoPointsForward(unsigned J2, unsigned ISH)
+{
+  xj2 = (*XYZSh)(0,J2,ISH);
+  yj2 = (*XYZSh)(1,J2,ISH);
+  tauxip2 = xj2-xj;
+  tauyip2 = yj2-yj;
+}
+
+//----------------------------------------------------------------------------//
+
+void CoNorm4Pg3D::onePointBackward(unsigned J, unsigned ISH)
+{
+  xj = (*XYZSh)(0,J,ISH);
+  yj = (*XYZSh)(1,J,ISH);
+  tauxim1 = xi-xj;
+  tauyim1 = yi-yj;
+}
+
+//----------------------------------------------------------------------------//
+
+void CoNorm4Pg3D::twoPointsBackward(unsigned J2, unsigned ISH)
+{
+  xj2 = (*XYZSh)(0,J2,ISH);
+  yj2 = (*XYZSh)(1,J2,ISH);
+  tauxim2 = xj-xj2;
+  tauyim2 = yj-yj2;
+}
+
+//----------------------------------------------------------------------------//
+
+void CoNorm4Pg3D::setTauIp1ToZero() {tauxip1 = 0; tauyip1 = 0;}
+
+//----------------------------------------------------------------------------//
+
+void CoNorm4Pg3D::setTauIp2ToZero() {tauxip2 = 0; tauyip2 = 0;}
+
+//----------------------------------------------------------------------------//
+
+void CoNorm4Pg3D::setTauIm1ToZero() {tauxim1 = 0; tauyim1 = 0;}
+
+//----------------------------------------------------------------------------//
+
+void CoNorm4Pg3D::setTauIm2ToZero() {tauxim2 = 0; tauyim2 = 0;}
+
+//----------------------------------------------------------------------------//
+
+void CoNorm4Pg3D::setAddress()
+{
+  unsigned start = npoin->at(0) * PhysicsInfo::getnbDofMax() +
+                   nShockPoints->at(0) *
+                   PhysicsInfo::getnbShMax() *
+                   PhysicsInfo::getnbDofMax();
+  ZRoeShd = new Array3D <double> (PhysicsInfo::getnbDofMax(),
+                                  nShockPoints->at(0),
+                                  PhysicsInfo::getnbShMax(),
+                                  &zroe->at(start));
+}
+
+//----------------------------------------------------------------------------//
+
+void CoNorm4Pg3D::setSize()
+{
+  vShNor->resize(PhysicsInfo::getnbDim(),
+                 nShockPoints->at(0),
+                 PhysicsInfo::getnbShMax());
+}
+
+//----------------------------------------------------------------------------//
+
+void CoNorm4Pg3D::freeArray()
+{
+  delete ZRoeShd;
+}
+
+//----------------------------------------------------------------------------//
+
+void CoNorm4Pg3D::setMeshData()
+{
+  npoin = MeshData::getInstance().getData <vector<unsigned> > ("NPOIN");
+  zroe = MeshData::getInstance().getData <vector<double> > ("ZROE");
+}
+
+//----------------------------------------------------------------------------//
+
+void CoNorm4Pg3D::setPhysicsData()
+{
+  ndof = PhysicsData::getInstance().getData <unsigned> ("NDOF");
+  nShocks = PhysicsData::getInstance().getData <unsigned> ("nShocks");
+  nShockPoints =
+      PhysicsData::getInstance().getData <vector<unsigned> > ("nShockPoints");
+  nSpecPoints =
+      PhysicsData::getInstance().getData <unsigned> ("nSpecPoints");
+  typeSh =
+      PhysicsData::getInstance().getData <vector<string> > ("TYPESH");
+  typeSpecPoints =
+      PhysicsData::getInstance().getData <vector<string> > ("TypeSpecPoints");
+  XYZSh = PhysicsData::getInstance().getData <Array3D<double> > ("XYZSH");
+  vShNor = PhysicsData::getInstance().getData <Array3D<double> > ("VSHNOR");
+  SHinSPPs =
+      PhysicsData::getInstance().getData <Array3D<unsigned> > ("SHinSPPs");
+  ShFaces =
+   PhysicsData::getInstance().getData <Array3D<unsigned> > ("ShFaces");
+   nShockFaces =
+    PhysicsData::getInstance().getData <vector<unsigned> > ("nShockFaces");
+}
+
+//----------------------------------------------------------------------------//
+
+} // namespace ShockFitting

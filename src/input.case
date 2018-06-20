@@ -1,0 +1,183 @@
+.ShockFittingObj = StandardShockFittingBeta
+
+# set the directory path for the results
+ .StandardShockFittingBeta.ResultsDir = ./Results_SF
+
+# version 'original'
+# version 'optimized' (calling triangle mesh generator library without in/out files)
+.StandardShockFittingBeta.Version = original
+
+# specifies if the triangle file  are given (set to false) or are generated from
+# the started caotured solution (set to true)
+ .StandardShockFittingBeta.startFromCapturedFiles = true
+
+# computes the residual related to the shock fitting algorithm if set to true
+ .StandardShockFittingBeta.shockFittingResidual = false
+
+###----------------------- MeshData ------------------------
+ # distance between two shock faces
+  .StandardShockFittingBeta.MeshData.EPS = 1e-6
+ # max non dimensional distance of phantom nodes    0.005
+  .StandardShockFittingBeta.MeshData.SNDMIN = 0.005
+ # length of the shock edges
+   .StandardShockFittingBeta.MeshData.DXCELL = 0.05
+ # relax coefficient of shock points integration
+  .StandardShockFittingBeta.MeshData.SHRELAX = 0.9
+ # number of hole points
+  .StandardShockFittingBeta.MeshData.Naddholes = 0
+ # hole points coordinates
+  .StandardShockFittingBeta.MeshData.CADDholes = 0
+ # number of processor
+  .StandardShockFittingBeta.MeshData.NPROC = 16
+ # beginning step
+  .StandardShockFittingBeta.MeshData.NBegin = 0
+ # number of step
+  .StandardShockFittingBeta.MeshData.NSteps = 2
+ # number of iterations before saving solution
+  .StandardShockFittingBeta.MeshData.IBAK = 1
+
+
+###----------------------------------------------------------
+
+
+###----------------------- PhysicsData-----------------------
+
+ ##--- PhysicsInfo
+  # space dimension
+    .StandardShockFittingBeta.PhysicsData.PhysicsInfo.NDIM = 3
+  # max number of degrees of freedom (should not be changed)
+    .StandardShockFittingBeta.PhysicsData.PhysicsInfo.NDOFMAX = 6
+  # max number of shocks
+    .StandardShockFittingBeta.PhysicsData.PhysicsInfo.NSHMAX = 1
+  # max number of shock points for each shock
+    .StandardShockFittingBeta.PhysicsData.PhysicsInfo.NPSHMAX = 10000
+  # max number of shock edges for each shock (NPSHMAX-1)
+    .StandardShockFittingBeta.PhysicsData.PhysicsInfo.NESHMAX = 9999
+  # max number of holes
+    .StandardShockFittingBeta.PhysicsData.PhysicsInfo.NADDHOLESMAX = 10
+  # max number of special points
+    .StandardShockFittingBeta.PhysicsData.PhysicsInfo.NSPMAX = 12
+  # specific heat ratio
+    .StandardShockFittingBeta.PhysicsData.PhysicsInfo.GAM = 1.40e+0
+ ##------
+
+
+ ##--- ChemicalInfo
+  # gas model (PG, Cneq, TCneq)
+    .StandardShockFittingBeta.PhysicsData.ChemicalInfo.Model = PG
+ ##------
+
+
+ ##--- ReferenceInfo
+  # isoentropic coefficient of the gas
+    .StandardShockFittingBeta.PhysicsData.ReferenceInfo.gamma = 1.4e0
+  # gas constant (J/kg/K)
+    .StandardShockFittingBeta.PhysicsData.ReferenceInfo.Rgas = 287.046e0
+  # reference temperature (K)
+    .StandardShockFittingBeta.PhysicsData.ReferenceInfo.TempRef = 290.0e0
+  # freestream pressure (Pa)
+    .StandardShockFittingBeta.PhysicsData.ReferenceInfo.PressRef = 1000.0e0
+  # reference speed (m/s)
+    .StandardShockFittingBeta.PhysicsData.ReferenceInfo.VelocityRef =3413.805442611e0
+  # reference Mach number
+    .StandardShockFittingBeta.PhysicsData.ReferenceInfo.MachRef =10.0e0
+ ##------
+
+###----------------------------------------------------------
+
+
+##--- List of mesh generator objects
+ .StandardShockFittingBeta.MeshGeneratorList = ReadTetgen ReSdwInfo3D \
+                                           TetgenExe Tricall
+
+# processing file
+   .StandardShockFittingBeta.ReadTetgen.InputFile = na00
+# file types (in default order)
+   .StandardShockFittingBeta.ReadTetgen.FileTypes = node poly ele neigh edge face
+# shock points informations file
+  .StandardShockFittingBeta.ReSdwInfo3D.InputFile = sh00.dat
+##------
+
+##--- List of shock detector objects
+
+  .StandardShockFittingBeta.ShockDetectorList = DetectorAlgorithm
+  .StandardShockFittingBeta.DetectorAlgorithm.From = Param
+  .StandardShockFittingBeta.DetectorAlgorithm.To = Prim
+  .StandardShockFittingBeta.DetectorAlgorithm.GasModel = Pg
+  .StandardShockFittingBeta.DetectorAlgorithm.AdditionalInfo = Dimensional
+  .StandardShockFittingBeta.DetectorAlgorithm.Detector = GnoffoShockSensor
+  .StandardShockFittingBeta.DetectorAlgorithm.fittingTechnique = Ellipse
+  .StandardShockFittingBeta.DetectorAlgorithm.shockLayerFactor = 1
+
+##------
+
+
+##--- List of remeshing objects
+.StandardShockFittingBeta.RemeshingList = BndryNodePtr RdDpsEq3D FndPhPs3D ChangeBndryPtr \
+                                          CoNorm4Pg3D CoPntDispl3D FixMshSps3D RdDps Smoothing3D
+##------
+
+
+##--- List of writing mesh objects
+ .StandardShockFittingBeta.WritingMeshList = WriteTetgen WriteBackTetgen WriteSdwInfo3D
+##------
+
+
+##--- List of converters
+ .StandardShockFittingBeta.ConverterList = Tecplot2StartingTetgen \
+                                           Tetgen2Tecplot CFmesh2Tetgen
+
+  # Converter features
+  # From/To        => Param : parameter vector
+  #                   Prim : primitive
+  #                   Cons : conservative (not implemented)
+  # GasModel       => Pg or TCneq
+  # AdditionalInfo => Dimensional or Adimensional related to CoolFluiD fmt
+
+  # object converting the starting captured solution in the triangle files
+  .StandardShockFittingBeta.Tecplot2StartingTetgen.InputFile = ./StartCapturedSolution/CFresults/hemi.plt  \
+							./StartCapturedSolution/CFresults/hemi.surf.plt
+  .StandardShockFittingBeta.Tecplot2StartingTetgen.From = Prim
+  .StandardShockFittingBeta.Tecplot2StartingTetgen.To = Param
+  .StandardShockFittingBeta.Tecplot2StartingTetgen.GasModel = Pg
+  .StandardShockFittingBeta.Tecplot2StartingTetgen.AdditionalInfo = Dimensional
+
+  # object converting the triangle flies in the cfin.CFmesh file
+  .StandardShockFittingBeta.Tetgen2Tecplot.From = Param
+  .StandardShockFittingBeta.Tetgen2Tecplot.To = Prim
+  .StandardShockFittingBeta.Tetgen2Tecplot.GasModel = Pg
+  .StandardShockFittingBeta.Tetgen2Tecplot.AdditionalInfo = Dimensional
+   # 'single' for a single shock boundary
+   # 'splitted' for a shock boundary splitted in InnerSub and InnerSup
+  .StandardShockFittingBeta.Tetgen2Tecplot.ShockBoundary = splitted
+
+  # object converting the cfout.CFmesh file in the triangle files
+  .StandardShockFittingBeta.CFmesh2Tetgen.From = Prim
+  .StandardShockFittingBeta.CFmesh2Tetgen.To = Param
+  .StandardShockFittingBeta.CFmesh2Tetgen.GasModel = Pg
+  .StandardShockFittingBeta.CFmesh2Tetgen.AdditionalInfo = Dimensional
+##------
+
+
+##--- List of cfd solvers
+.StandardShockFittingBeta.CFDSolverList = COOLFluiD
+##------
+
+##--- List of copy maker objects
+.StandardShockFittingBeta.CopyMakerList = MeshBackup CopyRoeValues1 \
+                                       CopyRoeValues2 MeshRestoring
+##------
+
+
+## List of state updater objects
+.StandardShockFittingBeta.StateUpdaterList = ComputeStateDps4Pg3D FixStateSps MoveDps4Pg3D \
+ 					     Interp3D ComputeResidual
+
+# specifies the norm used to compute the residual (L1 or L2)
+ .StandardShockFittingBeta.ComputeResidual.whichNorm = L1
+# specifies if the norm is weighted (true or false)
+ .StandardShockFittingBeta.ComputeResidual.isItWeighted = true
+# specifies the gas model used to make the trasnformation to primitive var
+# Pg or TCneq
+ .StandardShockFittingBeta.ComputeResidual.gasModel = Pg
+##

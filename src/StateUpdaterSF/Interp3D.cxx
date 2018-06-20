@@ -1,0 +1,424 @@
+// Copyright (C) 2014 von Karman Institute for Fluid Dynamics, Belgium
+//
+// This software is distributed under the terms of the
+// GNU Lesser General Public License version 3 (LGPLv3).
+// See doc/lgpl.txt and doc/gpl.txt for the license text.
+
+#include "StateUpdaterSF/Interp3D.hh"
+#include "Framework/Log.hh"
+#include "Framework/MeshData.hh"
+#include "Framework/PhysicsData.hh"
+#include "Framework/PhysicsInfo.hh"
+#include "MathTools/Area.hh"
+#include "MathTools/Jcycl.hh"
+#include "MathTools/MinMax.hh"
+#include "SConfig/ObjectProvider.hh"
+#include <omp.h>
+#include <sys/time.h>
+
+//--------------------------------------------------------------------------//
+
+using namespace std;
+using namespace SConfig;
+
+//--------------------------------------------------------------------------//
+
+namespace ShockFitting {
+
+//--------------------------------------------------------------------------//
+
+// this variable instantiation activates the self-registration mechanism
+ObjectProvider<Interp3D, StateUpdater> interp3DProv("Interp3D");
+
+//--------------------------------------------------------------------------//
+
+Interp3D::Interp3D(const std::string& objectName) :
+  StateUpdater(objectName)
+{
+}
+
+//--------------------------------------------------------------------------//
+
+Interp3D::~Interp3D()
+{
+}
+
+//--------------------------------------------------------------------------//
+
+void Interp3D::setup()
+{
+  LogToScreen(VERBOSE,"Interp3D::setup() => start\n");
+
+  LogToScreen(VERBOSE,"Interp3D::setup() => end\n");
+}
+
+//--------------------------------------------------------------------------//
+
+void Interp3D::unsetup()
+{
+  LogToScreen(VERBOSE,"Interp3D::unsetup()\n");
+}
+
+//--------------------------------------------------------------------------//
+
+void Interp3D::update()
+{
+  LogToScreen(INFO,"Interp3D::update()\n");
+
+  setMeshData();
+  setPhysicsData();
+
+  setAddress();
+
+  unsigned I1, I2, JPOIN;
+
+
+
+  logfile.Open(getClassName().c_str());
+
+  logfile("Entering in Interp3D\n");
+
+  // match upstream nodes with downstream ones
+  // these are the coordinates of the shocked mesh (1)
+  // the nof of shock points belongs the shocked mesh
+  // NOT the background mesh
+
+  
+  for(unsigned ISH=0; ISH<(*nShocks); ISH++) {
+   for(unsigned IPOIN=0; IPOIN<nShockPoints->at(ISH); IPOIN++)  {
+    I1 = ISH * PhysicsInfo::getnbShMax() + IPOIN; //c++ indeces start from 0
+    JPOIN = M02M12->at(I1);
+    (*XYZ)(0,JPOIN-1) = (*XYZSh)(0,IPOIN,ISH); // c++ indeces start from 0
+    (*XYZ)(1,JPOIN-1) = (*XYZSh)(1,IPOIN,ISH); // c++ indeces start from 0
+    (*XYZ)(2,JPOIN-1) = (*XYZSh)(2,IPOIN,ISH); // c++ indeces start from 0
+    I2 = I1 + nShockPoints->at(ISH) * PhysicsInfo::getnbShMax();
+    JPOIN = M02M12->at(I2);
+    (*XYZ)(0,JPOIN-1) = (*XYZSh)(0,IPOIN,ISH); // c++ indeces start from 0
+    (*XYZ)(1,JPOIN-1) = (*XYZSh)(1,IPOIN,ISH); // c++ indeces start from 0
+    (*XYZ)(2,JPOIN-1) = (*XYZSh)(2,IPOIN,ISH); // c++ indeces start from 0
+   }
+  }
+
+  setCGALvectors();
+
+
+  int counter_point=0;
+  int counter_fail=0;
+  int counter_found=0;
+  
+
+  // interpolate background grid nodes using shocked grid connectivity
+  // the interpolation is necessary only for the phantom nodes
+  
+  struct timeval start, end;
+  gettimeofday(&start, NULL);
+  
+  for(unsigned IPOIN=0; IPOIN<npoin->at(0); IPOIN++) {
+   unsigned m_IPOIN = IPOIN+1;
+
+   // nodcod = -1 internal phantom nodes
+   // nodcod = -2 boundary phantom nodes
+   if (   (nodcod->at(IPOIN)!=-1) && (nodcod->at(IPOIN)!=-2)  ) {
+    // M02M1 is filled with indeces that start from 1
+    // M02M1(1:NPOIN+2*NSHMAX*NPSHMAX)
+    JPOIN = M02M1->at(m_IPOIN);
+    if (JPOIN==0) {
+     cout << "Interp3D::error => something wrong for " <<  JPOIN <<"\n";
+    }
+    for(unsigned I=0; I<(*ndof); I++) {
+     (*zBkg)(I,IPOIN) = (*zroe)(I,JPOIN-1); // c++ indeces start form 0
+    }
+   }
+  }
+  
+  #pragma omp parallel for //ordered schedule(dynamic)
+  for(unsigned IPOIN=0; IPOIN<npoin->at(0); IPOIN++) {
+   unsigned m_IPOIN = IPOIN+1;
+
+   // nodcod = -1 internal phantom nodes
+   // nodcod = -2 boundary phantom nodes
+   if (   (nodcod->at(IPOIN)==-1) || (nodcod->at(IPOIN)==-2)  ) {
+    logfile("Trying to locate ", m_IPOIN);
+    logfile("(",(*XYZBkg)(0,IPOIN),",",(*XYZBkg)(1,IPOIN));
+    logfile(",",(*XYZBkg)(2,IPOIN),")\n");
+
+    finder(IPOIN);
+    counter_point++;
+
+		//#pragma omp ordered
+    if(getIfound()!=0) {
+     counter_fail++;
+     logfile("Search failed for vertex ", m_IPOIN, "\n");
+     //  for(unsigned I=0; I<PhysicsInfo::getnbDim(); I++)
+     //   { logfile((*XYZBkg)(I,IPOIN), " "); }
+     logfile ("\ncell no. is ",getCell(),"\n");
+       exit(1);
+    }
+    if (getIfound()==0){
+    logfile("Found in cell ",getCell()," ",getIfound(), "\n");
+    counter_found++;
+    }
+   }
+  }// for nPoints
+  
+  
+  
+  
+  gettimeofday(&end, NULL);      
+  long delta = ((end.tv_sec  - start.tv_sec) * 1000000u + end.tv_usec - start.tv_usec) / 1.e4;
+
+  std::cout << "-time OMP: " << delta << endl;
+
+
+  // de-allocate dynamic arrays
+  freeArray();
+
+  std::cout << "-Points checked: " << counter_point <<'\n';
+  std::cout << "-Points failed:  " << counter_fail <<'\n';
+  std::cout << "-Points found:  " << counter_found <<'\n';
+
+
+  logfile.Close();
+}
+
+//--------------------------------------------------------------------------//
+
+void Interp3D::finder(unsigned IPOIN)
+{
+
+
+  Point_3 phPoint((*XYZBkg)(0,IPOIN),(*XYZBkg)(1,IPOIN),(*XYZBkg)(2,IPOIN));
+
+  // K-neighborous search from CGAL, to get back the ID of the closest node of the mesh
+  My_point_property_map ppmap(mesh_points);
+
+  // Insert number_of_data_points in the tree
+  Tree tree(
+  boost::counting_iterator<std::size_t>(0),
+  boost::counting_iterator<std::size_t>(mesh_points.size()),
+  Splitter(),
+  Traits(ppmap));
+
+  Distance tr_dist(ppmap);
+  // number of neighbors points
+  const unsigned int K=1000;
+
+  // working variables and vectors
+  double vol_base, vol_0, vol_1, vol_2, vol_3;
+  double s, t;
+  unsigned I;
+  MinMax <double> m;
+  vector<double> ratio(4);
+
+  bool found;
+  int counter_close =0;
+
+  ifound=0;
+  found = false;
+  counter_close=0;
+  K_Neighbor_search search(tree, phPoint, K,0,true,tr_dist);
+    if (found==false){
+      for(K_Neighbor_search::iterator it = search.begin(); it != search.end(); it++){
+        if (found!=true){
+
+         for(unsigned IELEM=0;IELEM<nelem->at(1);IELEM++) {
+          if (found!=true){
+            for(unsigned IV=0; IV<(*nvt); IV++) {
+              if ( it->first ==(*celnod)(IV,IELEM)-1){
+
+                vol_base = volume(Point_3((*XYZ)(0,(*celnod)(0,IELEM)-1),(*XYZ)(1,(*celnod)(0,IELEM)-1),(*XYZ)(2,(*celnod)    (0,IELEM)-1)),
+                Point_3((*XYZ)(0,(*celnod)(1,IELEM)-1),(*XYZ)(1,(*celnod)(1,IELEM)-1),(*XYZ)(2,(*celnod)(1,IELEM)-1)),
+                Point_3((*XYZ)(0,(*celnod)(2,IELEM)-1),(*XYZ)(1,(*celnod)(2,IELEM)-1),(*XYZ)(2,(*celnod)(2,IELEM)-1)),
+                Point_3((*XYZ)(0,(*celnod)(3,IELEM)-1),(*XYZ)(1,(*celnod)(3,IELEM)-1),(*XYZ)(2,(*celnod)(3,IELEM)-1)));
+
+                vol_0= volume(phPoint,
+                Point_3((*XYZ)(0,(*celnod)(1,IELEM)-1),(*XYZ)(1,(*celnod)(1,IELEM)-1),(*XYZ)(2,(*celnod)(1,IELEM)-1)),
+                Point_3((*XYZ)(0,(*celnod)(2,IELEM)-1),(*XYZ)(1,(*celnod)(2,IELEM)-1),(*XYZ)(2,(*celnod)(2,IELEM)-1)),
+                Point_3((*XYZ)(0,(*celnod)(3,IELEM)-1),(*XYZ)(1,(*celnod)(3,IELEM)-1),(*XYZ)(2,(*celnod)(3,IELEM)-1)));
+
+                vol_1=volume(Point_3((*XYZ)(0,(*celnod)(0,IELEM)-1),(*XYZ)(1,(*celnod)(0,IELEM)-1),(*XYZ)(2,(*celnod)(0,IELEM)-1)),
+                phPoint,
+                Point_3((*XYZ)(0,(*celnod)(2,IELEM)-1),(*XYZ)(1,(*celnod)(2,IELEM)-1),(*XYZ)(2,(*celnod)(2,IELEM)-1)),
+                Point_3((*XYZ)(0,(*celnod)(3,IELEM)-1),(*XYZ)(1,(*celnod)(3,IELEM)-1),(*XYZ)(2,(*celnod)(3,IELEM)-1)));
+
+                vol_2=volume(Point_3((*XYZ)(0,(*celnod)(0,IELEM)-1),(*XYZ)(1,(*celnod)(0,IELEM)-1),(*XYZ)(2,(*celnod)(0,IELEM)-1)),
+                Point_3((*XYZ)(0,(*celnod)(1,IELEM)-1),(*XYZ)(1,(*celnod)(1,IELEM)-1),(*XYZ)(2,(*celnod)(1,IELEM)-1)),
+                phPoint,
+                Point_3((*XYZ)(0,(*celnod)(3,IELEM)-1),(*XYZ)(1,(*celnod)(3,IELEM)-1),(*XYZ)(2,(*celnod)(3,IELEM)-1)));
+
+                vol_3=volume(Point_3((*XYZ)(0,(*celnod)(0,IELEM)-1),(*XYZ)(1,(*celnod)(0,IELEM)-1),(*XYZ)(2,(*celnod)(0,IELEM)-1)),
+                Point_3((*XYZ)(0,(*celnod)(1,IELEM)-1),(*XYZ)(1,(*celnod)(1,IELEM)-1),(*XYZ)(2,(*celnod)(1,IELEM)-1)),
+                Point_3((*XYZ)(0,(*celnod)(2,IELEM)-1),(*XYZ)(1,(*celnod)(2,IELEM)-1),(*XYZ)(2,(*celnod)(2,IELEM)-1)),
+                phPoint);
+
+                ratio.at(0)=vol_0/vol_base;
+                ratio.at(1)=vol_1/vol_base;
+                ratio.at(2)=vol_2/vol_base;
+                ratio.at(3)=vol_3/vol_base;
+
+
+                counter_close ++;
+
+                if (ratio.at(0)>=0&&ratio.at(0)<=1){
+                  if (ratio.at(1)>=0&&ratio.at(1)<=1){
+                    if (ratio.at(2)>=0&&ratio.at(2)<=1){
+                      if (ratio.at(3)>=0&&ratio.at(3)<=1){
+                        found = true;
+                        ifound=0;
+                        ielem = IELEM+1; // c++ indeces start from 0
+                        for(unsigned ivar=0; ivar<(*ndof); ivar++) { (*zBkg)(ivar,IPOIN) = 0; }
+                        for(unsigned IV=0; IV<(*nvt); IV++) {
+                          I = (*celnod)(IV,IELEM);
+                          for(unsigned ivar=0; ivar<(*ndof); ivar++) {
+                            (*zBkg)(ivar,IPOIN) = (*zBkg)(ivar,IPOIN) + ratio.at(IV) * (*zroe)(ivar,I-1);
+                          }// for ivar
+                        }//for IV
+                        return;
+                      }//if 1
+                    }// if 2
+                  }// if 3
+                }//if 4
+              }//if first
+            }// for NVT
+          }// if found ! true
+         }// for IELEM
+        }// if found ! true
+      } // K_Neighbor_search
+    } // FIRST IF FOUND==FALSE
+
+    if(found==false) {
+      ifound=1;
+      // std::cout << "-------------------------------------------" << '\n';
+      // cout << "FAILED for Vertex coords " << phPoint[0] << ", " << phPoint[1] << ", " << phPoint[2] << "\n";
+      // cout << "Search failed for POIN  " << IPOIN << "\n";
+      // std::cout << "-------------------------------------------" << '\n';
+    } // LAST if found=false
+
+  return;
+}
+
+//--------------------------------------------------------------------------//
+
+void Interp3D::setCGALvectors(){
+	
+	std::cout << "-setting CGAL vectors: start " << '\n';
+
+	mesh_points.resize(npoin->at(1));
+
+	for(unsigned IPOIN=0;IPOIN<npoin->at(1);IPOIN++) {
+	  mesh_points.at(IPOIN)=Point_3((*XYZ)(0,IPOIN),(*XYZ)(1,IPOIN),(*XYZ)(2,IPOIN));
+	}
+	
+	std::cout << "-setting CGAL vectors: end " << '\n';
+	
+}
+
+//--------------------------------------------------------------------------//
+
+void Interp3D::setAddress()
+{
+  unsigned start;
+  start = 0;
+  XYZBkg = new Array2D<double>(PhysicsInfo::getnbDim() ,
+                              npoin->at(0) + 2 *
+                              nShockPoints->at(0) *
+                              PhysicsInfo::getnbShMax(),
+                              &coorVect->at(start));
+  zBkg = new Array2D<double>(PhysicsInfo::getnbDofMax() ,
+                              npoin->at(0) + 2 *
+                              PhysicsInfo::getnbShMax() *
+                              nShockPoints->at(0),
+                              &zroeVect->at(start));
+  start = PhysicsInfo::getnbDim() *
+          (npoin->at(0) + 2 *
+           PhysicsInfo::getnbShMax() * PhysicsInfo::getnbShPointsMax());
+  XYZ = new Array2D <double> (PhysicsInfo::getnbDim(),
+                             (npoin->at(1) + 2 *
+                              PhysicsInfo::getnbShMax() *
+                              nShockPoints->at(0)),
+                             &coorVect->at(start));
+  start = PhysicsInfo::getnbDofMax() *
+          (npoin->at(0) + 2 *
+           PhysicsInfo::getnbShMax() * nShockPoints->at(0));
+  zroe = new Array2D <double>(PhysicsInfo::getnbDofMax(),
+                              (npoin->at(1) + 2 *
+                              PhysicsInfo::getnbShMax() *
+                              nShockPoints->at(0)),
+                              &zroeVect->at(start));
+  start = (*nvt) * nelem->at(0);
+  celnod = new Array2D<int> ((*nvt), nelem->at(1), &celnodVect->at(start));
+  // XYShu and XYShd have the starting pointers referred to shocked mesh
+  start = npoin->at(0) * PhysicsInfo::getnbDim() +
+          PhysicsInfo::getnbDim() *
+          (npoin->at(0) + 2 *
+           PhysicsInfo::getnbShMax() * PhysicsInfo::getnbShPointsMax());
+  XYZShu = new Array3D <double> (PhysicsInfo::getnbDim(),
+                                nShockPoints->at(0),
+                                PhysicsInfo::getnbShMax(),
+                                &coorVect->at(start));
+  start = npoin->at(0) * PhysicsInfo::getnbDim() +
+          PhysicsInfo::getnbDim() *
+          (npoin->at(0) + 2 *
+           PhysicsInfo::getnbShMax() * PhysicsInfo::getnbShPointsMax());
+  XYZShd = new Array3D <double> (PhysicsInfo::getnbDim(),
+                                nShockPoints->at(0),
+                                PhysicsInfo::getnbShMax(),
+                                &coorVect->at(start));
+  // M02M1 is filled with the indeces that start from 1
+  // M02M1(1:NPOIN(0)+2*NSHMAX*NPSHMAX)
+  // M02M1 is filled wth the indeces that start from 0
+  // M02M12(0:2*NSHMAX*NPSHMAX-1)
+  M02M12 = new vector<int>(2 * PhysicsInfo::getnbShMax() *
+                               nShockPoints->at(0));
+
+  for(unsigned i=0; i<M02M12->size(); i++) {
+   M02M12->at(i) = M02M1->at(i+npoin->at(0)+1);
+  }
+}
+
+//--------------------------------------------------------------------------//
+
+void Interp3D::freeArray()
+{
+  delete zroe; delete XYZ;
+  delete XYZShu; delete XYZShd;
+  delete celnod;
+  delete XYZBkg; delete zBkg;
+  delete M02M12;
+}
+
+//--------------------------------------------------------------------------//
+
+void Interp3D::setMeshData()
+{
+  nvt = MeshData::getInstance().getData <unsigned> ("NVT");
+  npoin = MeshData::getInstance().getData <vector<unsigned> > ("NPOIN");
+  nelem = MeshData::getInstance().getData <vector<unsigned> > ("NELEM");
+  zroeVect = MeshData::getInstance().getData <vector<double> > ("ZROE");
+  coorVect = MeshData::getInstance().getData <vector<double> > ("COOR");
+  celnodVect =
+    MeshData::getInstance().getData <vector<int> > ("CELNOD");
+  nodcod =
+    MeshData::getInstance().getData <vector<int> > ("NODCOD");
+  M02M1 = MeshData::getInstance().getData <vector<int> > ("M02M1");
+}
+
+//--------------------------------------------------------------------------//
+
+void Interp3D::setPhysicsData()
+{
+  ndof = PhysicsData::getInstance().getData <unsigned> ("NDOF");
+  nShocks = PhysicsData::getInstance().getData <unsigned> ("nShocks");
+  nShockPoints =
+   PhysicsData::getInstance().getData <vector<unsigned> > ("nShockPoints");
+  XYZSh =
+   PhysicsData::getInstance().getData <Array3D<double> > ("XYZSH");
+  nShockFaces =
+   PhysicsData::getInstance().getData <vector <unsigned> > ("nShockFaces");
+  ShFaces = PhysicsData::getInstance().getData <Array3D <unsigned> > ("ShFaces");
+
+}
+
+//--------------------------------------------------------------------------//
+
+} // namespace ShockFitting
